@@ -536,6 +536,12 @@
       const n = norm(v);
       return n !== "" && !ARREARS_EXCLUDE.some(x => n.includes(x));
     };
+    // Mora = atraso de 90 días o más (tramos BCRA)
+    const MORA_KEYS = ["mas de 90", "mas de 180", "y hasta 2 ano", "y hasta 3 ano", "y hasta 4 ano", "mas de 4 ano"];
+    const isMora = v => {
+      const n = norm(v);
+      return MORA_KEYS.some(k => n.includes(k));
+    };
     function buildRecords(headers, rows) {
       const C = resolveColumns(headers);
       const g = (r, i) => i != null && i >= 0 ? r[i] : undefined;
@@ -572,6 +578,9 @@
           });
         }
         const arrearsCount = debts.filter(d => isArrears(d.alDia)).length;
+        const moraCount = debts.filter(d => isMora(d.alDia)).length;
+        const creditorsCount = Object.values(creditors).filter(Boolean).length;
+        const declaraDeuda = isSi(g(r, C.tieneDeuda));
         const atribucion = optSet(r, C.atribucion),
           redujo = optSet(r, C.redujo),
           coercion = optSet(r, C.coercion),
@@ -610,9 +619,13 @@
           tieneDeuda,
           antiguedad: (g(r, C.antiguedad) || "").toString().trim(),
           creditors,
+          creditorsCount,
+          declaraDeuda,
           debts,
           inArrears: arrearsCount > 0,
           arrearsCount,
+          inMora: moraCount > 0,
+          moraCount,
           propIngreso: (propIngreso || "").toString().trim(),
           capacidad: (capacidad || "").toString().trim(),
           atribucion,
@@ -807,9 +820,13 @@
           tieneDeuda: nd > 0,
           antiguedad: pick(["Hace menos de 6 meses", "Entre 6 meses y 1 año", "Entre 1 y 2 años", "Entre 2 y 4 años"]),
           creditors: cr,
+          creditorsCount: Object.values(cr).filter(Boolean).length,
+          declaraDeuda: nd > 0,
           debts,
           inArrears: arrears > 0,
           arrearsCount: arrears,
+          inMora: debts.filter(x => isMora(x.alDia)).length > 0,
+          moraCount: debts.filter(x => isMora(x.alDia)).length,
           propIngreso: propV,
           capacidad: capV,
           atribucion: atrib,
@@ -1092,6 +1109,8 @@
         className: "p-10 mt-4"
       }, /*#__PURE__*/React.createElement(Empty, null)) : tab === "avance" ? /*#__PURE__*/React.createElement(Avance, {
         data: data
+      }) : tab === "alerta" ? /*#__PURE__*/React.createElement(AlertaEncuesta, {
+        data: data
       }) : tab === "hogares" ? /*#__PURE__*/React.createElement(Hogares, {
         data: data
       }) : tab === "trabajo" ? /*#__PURE__*/React.createElement(Trabajo, {
@@ -1359,7 +1378,7 @@
       tab,
       setTab
     }) {
-      const items = [["avance", "Avance de campo", MapPin], ["hogares", "Perfil de hogares", Users], ["trabajo", "Trabajo", HandCoins], ["deuda", "Endeudamiento", Wallet], ["vuln", "Vulnerabilidad e impacto", ShieldAlert]];
+      const items = [["avance", "Avance de campo", MapPin], ["alerta", "Alerta encuesta", AlertTriangle], ["hogares", "Perfil de hogares", Users], ["trabajo", "Trabajo", HandCoins], ["deuda", "Endeudamiento", Wallet], ["vuln", "Vulnerabilidad e impacto", ShieldAlert]];
       return /*#__PURE__*/React.createElement("div", {
         className: "max-w-6xl mx-auto px-3 sm:px-5 pt-3"
       }, /*#__PURE__*/React.createElement("div", {
@@ -1612,6 +1631,199 @@
       }, r.n))))))));
     }
 
+    /* ─────────────────  TAB: ALERTA ENCUESTA  ───────────────── */
+    function AlertaEncuesta({
+      data
+    }) {
+      const n = data.length;
+      const checks = [{
+        key: "ing",
+        short: "Ingreso",
+        title: "Ingreso fuera de rango",
+        color: T.clay,
+        def: "Ingreso mensual del hogar menor a $50.000 o mayor a $10.000.000.",
+        test: r => isFinite(r.ingTotal) && (r.ingTotal < 50000 || r.ingTotal > 10000000)
+      }, {
+        key: "deuda_baja",
+        short: "Deuda baja",
+        title: "Deuda de monto muy bajo",
+        color: T.amber,
+        def: "Alguna deuda con monto menor a $50.000 (posible error de carga o de unidad).",
+        test: r => r.debts.some(d => d.montoInicial > 0 && d.montoInicial < 50000 || d.debeHoy > 0 && d.debeHoy < 50000)
+      }, {
+        key: "acre_det",
+        short: "Acreedores vs. detalle",
+        title: "Acreedores declarados sin detalle suficiente",
+        color: T.indigo,
+        def: "Declara 3 o más tipos de acreedor pero detalla menos de 3 deudas (respondió “no tengo otra deuda”).",
+        test: r => r.creditorsCount >= 3 && r.debts.length < 3
+      }, {
+        key: "dice_sin",
+        short: "Dice deuda, no detalla",
+        title: "Dice tener deuda sin detallar",
+        color: T.indigo,
+        def: "Respondió que el hogar tiene deudas, pero no marcó ningún acreedor ni cargó ninguna deuda.",
+        test: r => r.declaraDeuda && r.creditorsCount === 0 && r.debts.length === 0
+      }, {
+        key: "hogar",
+        short: "Composición",
+        title: "Composición del hogar inconsistente",
+        color: T.clay,
+        def: "Adultos mayores que el total de personas, o más personas trabajando que integrantes del hogar.",
+        test: r => isFinite(r.personasMayores) && isFinite(r.personasHogar) && r.personasMayores > r.personasHogar || isFinite(r.personasTrabajaron) && isFinite(r.personasHogar) && r.personasTrabajaron > r.personasHogar
+      }, {
+        key: "cuota",
+        short: "Cuota > deuda",
+        title: "Cuota mayor que el monto de la deuda",
+        color: T.amber,
+        def: "El valor de una cuota supera el monto total recibido de esa deuda.",
+        test: r => r.debts.some(d => d.valorCuota > 0 && d.montoInicial > 0 && d.valorCuota > d.montoInicial)
+      }, {
+        key: "edad",
+        short: "Edad",
+        title: "Edad fuera de rango",
+        color: T.clay,
+        def: "Edad de la persona encuestada menor a 18 o mayor a 100 años.",
+        test: r => isFinite(r.edad) && (r.edad < 18 || r.edad > 100)
+      }];
+      const flagged = data.map(r => ({
+        r,
+        hits: checks.filter(c => c.test(r))
+      })).filter(x => x.hits.length);
+      const withAlert = flagged.length;
+      const rows = flagged.slice().sort((a, b) => b.hits.length - a.hits.length || String(a.r.provincia).localeCompare(String(b.r.provincia), "es"));
+      const perCheck = checks.map(c => ({
+        ...c,
+        count: data.filter(r => c.test(r)).length
+      }));
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-4 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Encuestas con alguna alerta",
+        value: pct(withAlert, n) + "%",
+        sub: `${fmtInt(withAlert)} de ${fmtInt(n)} encuestas`,
+        color: T.clay,
+        icon: AlertTriangle
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Encuestas sin alertas",
+        value: pct(n - withAlert, n) + "%",
+        sub: `${fmtInt(n - withAlert)} encuestas`,
+        color: T.petrol,
+        icon: CheckCircle2
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Controles aplicados",
+        value: fmtInt(checks.length),
+        sub: "chequeos de consistencia",
+        color: T.indigo,
+        icon: Layers
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Se\xF1ales de sospecha",
+        hint: "Chequeos de consistencia para revisar con el equipo \xB7 no son hallazgos sustantivos",
+        icon: AlertTriangle
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid sm:grid-cols-2 lg:grid-cols-3 gap-3"
+      }, perCheck.map(c => /*#__PURE__*/React.createElement("div", {
+        key: c.key,
+        style: {
+          background: T.paper,
+          borderLeft: `3px solid ${c.color}`
+        },
+        className: "rounded-lg p-3"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex items-baseline justify-between gap-2"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.ink
+        },
+        className: "text-sm font-semibold"
+      }, c.title), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: c.color,
+          fontFamily: serif
+        },
+        className: "text-xl leading-none whitespace-nowrap"
+      }, fmtInt(c.count))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          color: T.faint
+        },
+        className: "text-xs mt-0.5"
+      }, pct(c.count, n), "% de las encuestas"), /*#__PURE__*/React.createElement("p", {
+        style: {
+          color: T.muted
+        },
+        className: "text-xs mt-1.5 leading-snug"
+      }, c.def))))), /*#__PURE__*/React.createElement(Section, {
+        title: "Encuestas a revisar",
+        hint: `${fmtInt(withAlert)} encuestas con al menos una alerta · para remarcar a cada encuestador/a`,
+        icon: ShieldAlert
+      }, rows.length === 0 ? /*#__PURE__*/React.createElement(Empty, null) : /*#__PURE__*/React.createElement("div", {
+        className: "overflow-x-auto -mx-1"
+      }, /*#__PURE__*/React.createElement("table", {
+        className: "w-full text-xs",
+        style: {
+          borderCollapse: "collapse"
+        }
+      }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+        style: {
+          color: T.faint,
+          borderBottom: `1px solid ${T.line}`
+        },
+        className: "text-left"
+      }, /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "#"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Provincia"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Departamento"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Barrio"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Encuestador/a"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Alertas"))), /*#__PURE__*/React.createElement("tbody", null, rows.map((x, i) => /*#__PURE__*/React.createElement("tr", {
+        key: i,
+        style: {
+          borderBottom: `1px solid ${T.paper}`,
+          color: T.ink
+        }
+      }, /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.faint,
+          fontVariantNumeric: "tabular-nums"
+        }
+      }, x.r.idx + 1), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, x.r.provincia), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.muted
+        }
+      }, x.r.departamento), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, x.r.barrio), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.muted
+        }
+      }, x.r.surveyor), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "flex flex-wrap gap-1"
+      }, x.hits.map(h => /*#__PURE__*/React.createElement("span", {
+        key: h.key,
+        style: {
+          color: h.color,
+          background: T.paper,
+          border: `1px solid ${h.color}`
+        },
+        className: "text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap"
+      }, h.short)))))))))));
+    }
+
     /* ─────────────────  TAB: HOGARES  ───────────────── */
     function Hogares({
       data
@@ -1817,7 +2029,8 @@
       const n = data.length;
       const conDeuda = data.filter(r => r.tieneDeuda);
       const nD = conDeuda.length;
-      const mora = data.filter(r => r.inArrears).length;
+      const atraso = data.filter(r => r.inArrears).length;
+      const mora = data.filter(r => r.inMora).length;
       const sobre = data.filter(r => r.overIndebted).length;
       const credLbl = {
         banco: "Banco / crédito personal",
@@ -1920,7 +2133,7 @@
       return /*#__PURE__*/React.createElement("div", {
         className: "mt-4 space-y-4"
       }, /*#__PURE__*/React.createElement("div", {
-        className: "grid md:grid-cols-3 gap-3"
+        className: "grid grid-cols-2 lg:grid-cols-4 gap-3"
       }, /*#__PURE__*/React.createElement(Indicator, {
         title: "Endeudamiento",
         value: pct(nD, n),
@@ -1931,21 +2144,30 @@
         icon: Wallet,
         def: "Hogares con al menos una deuda, pr\xE9stamo o pago pendiente vigente."
       }), /*#__PURE__*/React.createElement(Indicator, {
-        title: "Mora / atraso",
-        value: pct(mora, n),
-        count: mora,
+        title: "Atraso",
+        value: pct(atraso, n),
+        count: atraso,
         total: n,
         color: T.amber,
         bg: T.amberSoft,
         icon: TrendingDown,
-        def: "Hogares con al menos una deuda con atraso en el pago (seg\xFAn situaci\xF3n BCRA)."
+        def: "Hogares con al menos una deuda que no est\xE1 al d\xEDa (cualquier tramo de atraso)."
+      }), /*#__PURE__*/React.createElement(Indicator, {
+        title: "Mora (90+ d\xEDas)",
+        value: pct(mora, n),
+        count: mora,
+        total: n,
+        color: T.clay,
+        bg: T.claySoft,
+        icon: AlertTriangle,
+        def: "Hogares con al menos una deuda con atraso de 90 d\xEDas o m\xE1s (situaci\xF3n BCRA)."
       }), /*#__PURE__*/React.createElement(Indicator, {
         title: "Sobreendeudamiento",
         value: pct(sobre, n),
         count: sobre,
         total: n,
-        color: T.clay,
-        bg: T.claySoft,
+        color: "#6B5B95",
+        bg: "#ECE7F1",
         icon: AlertTriangle,
         def: "Cumple \u22651 de: destina \u226525% del ingreso a deuda \xB7 paga con mucha dificultad o no puede \xB7 redujo alimentaci\xF3n para pagar."
       })), /*#__PURE__*/React.createElement(Section, {
