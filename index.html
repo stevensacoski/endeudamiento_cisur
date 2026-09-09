@@ -426,21 +426,23 @@
         surveyor: findExact("_submitted_by"),
         idx: findExact("_index")
       };
-      // creditor prevalence (Sí/No)
+      // creditor prevalence (Sí/No) — matched to the exact 12 columns (avoid the generic "¿tiene deuda?" text)
       C.creditors = {
         banco: find("prestamo personal"),
-        financiera: find("financiera"),
+        financiera: find("prestamo de financiera"),
         fintech: find("app o fintech"),
         tarjeta_banco: find("tarjeta de credito bancaria"),
         tarjeta_comercio: find("tarjeta de comercio"),
         cuotas_comercio: find("cuotas directamente"),
-        fiado: find("fiado"),
-        prestamista: find("prestamista"),
+        fiado: find("fiado o cuenta pendiente"),
+        prestamista: find("prestamista particular"),
         familiar: find("prestamo de familiar"),
-        cooperativa: find("cooperativa"),
+        cooperativa: find("credito de cooperativa"),
         servicios: find("facturas de servicios"),
-        alquiler: find("alquileres vencidos")
+        alquiler: find("alquileres vencidos"),
+        otro: findExact("Otro")
       };
+      C.nSi = findExact("n_si");
       // debt detail blocks — anchor + fixed offsets
       C.debtBlocks = [find("deuda n"), find("2da deuda"), find("3ra deuda")].map(a => a < 0 ? null : {
         tipo: a,
@@ -542,6 +544,12 @@
       const n = norm(v);
       return MORA_KEYS.some(k => n.includes(k));
     };
+    // Cualquier categoría BCRA reconocida (para localizar el "al día" aunque haya celdas combinadas)
+    const BCRA_BUCKETS = ["esta al dia", "hasta 31 dias", "mas de 31 y hasta 90", "mas de 90", "mas de 180", "y hasta 2 ano", "y hasta 3 ano", "y hasta 4 ano", "mas de 4 ano", "no sabe"];
+    const isBcraBucket = v => {
+      const n = norm(v);
+      return n !== "" && BCRA_BUCKETS.some(k => n.includes(k));
+    };
     function buildRecords(headers, rows) {
       const C = resolveColumns(headers);
       const g = (r, i) => i != null && i >= 0 ? r[i] : undefined;
@@ -565,21 +573,34 @@
         for (const b of C.debtBlocks) {
           if (!b) continue;
           const tipo = g(r, b.tipo);
-          if (!tipo || norm(tipo) === "" || norm(tipo).includes("no tengo otra")) continue;
+          if (tipo && norm(tipo).includes("no tengo otra")) continue;
+          // al_día robusto: usar +6; si no es una categoría BCRA (por celdas combinadas), escanear el bloque
+          let alDia = g(r, b.alDia);
+          if (!isBcraBucket(alDia)) {
+            for (let k = b.tipo; k <= b.tipo + 10; k++) {
+              const v = g(r, k);
+              if (isBcraBucket(v)) {
+                alDia = v;
+                break;
+              }
+            }
+          }
+          const hasReal = !!tipo && norm(tipo) !== "";
+          if (!hasReal && !isBcraBucket(alDia)) continue; // slot vacío ("no tengo otra deuda")
           debts.push({
-            tipo: String(tipo),
+            tipo: String(tipo || ""),
             motivo: g(r, b.motivo),
             montoInicial: num(g(r, b.montoInicial)),
             cuotas: num(g(r, b.cuotas)),
             valorCuota: num(g(r, b.valorCuota)),
             debeHoy: num(g(r, b.debeHoy)),
-            alDia: g(r, b.alDia),
+            alDia,
             modalidad: g(r, b.modalidad)
           });
         }
         const arrearsCount = debts.filter(d => isArrears(d.alDia)).length;
         const moraCount = debts.filter(d => isMora(d.alDia)).length;
-        const creditorsCount = Object.values(creditors).filter(Boolean).length;
+        const creditorsCount = Object.entries(creditors).filter(([k, v]) => k !== "otro" && v).length;
         const declaraDeuda = isSi(g(r, C.tieneDeuda));
         const atribucion = optSet(r, C.atribucion),
           redujo = optSet(r, C.redujo),
@@ -608,6 +629,7 @@
           horasAportante: num(g(r, C.horasAportante)),
           diasAportante: num(g(r, C.diasAportante)),
           volverTrabajo: (g(r, C.volverTrabajo) || "").toString().trim(),
+          nSi: num(g(r, C.nSi)),
           ingT,
           ingP,
           ingJ,
@@ -821,6 +843,7 @@
           antiguedad: pick(["Hace menos de 6 meses", "Entre 6 meses y 1 año", "Entre 1 y 2 años", "Entre 2 y 4 años"]),
           creditors: cr,
           creditorsCount: Object.values(cr).filter(Boolean).length,
+          nSi: Object.values(cr).filter(Boolean).length,
           declaraDeuda: nd > 0,
           debts,
           inArrears: arrears > 0,
@@ -2032,6 +2055,8 @@
       const atraso = data.filter(r => r.inArrears).length;
       const mora = data.filter(r => r.inMora).length;
       const sobre = data.filter(r => r.overIndebted).length;
+      const nsiBase = data.map(r => isFinite(r.nSi) && r.nSi > 0 ? r.nSi : r.creditorsCount).filter(x => x > 0);
+      const acreedProm = mean(nsiBase);
       const credLbl = {
         banco: "Banco / crédito personal",
         financiera: "Financiera",
@@ -2044,7 +2069,8 @@
         familiar: "Familiar / conocido",
         cooperativa: "Cooperativa / mutual",
         servicios: "Servicios vencidos",
-        alquiler: "Alquiler vencido"
+        alquiler: "Alquiler vencido",
+        otro: "Otro"
       };
       const credGroup = {
         banco: "formal",
@@ -2057,13 +2083,15 @@
         fiado: "informal",
         prestamista: "informal",
         familiar: "informal",
-        servicios: "oblig",
-        alquiler: "oblig"
+        servicios: "vivienda",
+        alquiler: "vivienda",
+        otro: "otro"
       };
       const groupColor = {
         formal: T.indigo,
         informal: T.clay,
-        oblig: T.amber
+        vivienda: T.amber,
+        otro: T.faint
       };
       const cred = Object.keys(credLbl).map(k => ({
         key: k,
@@ -2081,8 +2109,8 @@
         v: usa("informal"),
         c: T.clay
       }, {
-        name: "Obligaciones vencidas",
-        v: usa("oblig"),
+        name: "Gastos de vivienda",
+        v: usa("vivienda"),
         c: T.amber
       }].filter(x => x.v > 0);
       const fintech = data.filter(r => r.creditors.fintech).length;
@@ -2170,6 +2198,14 @@
         bg: "#ECE7F1",
         icon: AlertTriangle,
         def: "Cumple \u22651 de: destina \u226525% del ingreso a deuda \xB7 paga con mucha dificultad o no puede \xB7 redujo alimentaci\xF3n para pagar."
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-3 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Acreedores por hogar (promedio)",
+        value: fmtDec(acreedProm, 1),
+        sub: "entre hogares endeudados \xB7 columna n_si",
+        color: T.petrol,
+        icon: HandCoins
       })), /*#__PURE__*/React.createElement(Section, {
         title: "Espectro de acreedores",
         hint: "Prevalencia por tipo de fuente \xB7 un hogar puede tener varias",
@@ -2318,6 +2354,7 @@
       })).filter(x => x.value).sort((a, b) => b.value - a.value);
       const comida = data.filter(r => r.disminuyoComida).length;
       const comedor = data.filter(r => r.comedor).length;
+      const alimUnion = data.filter(r => r.disminuyoComida || r.comedor).length;
       const sitOrder = ["Empeoró", "Se mantuvo igual", "Mejoró"];
       const sit = ordered(countBy(data, r => r.situacion), sitOrder).filter(d => d.key).map(d => ({
         label: d.key,
@@ -2362,7 +2399,16 @@
         value: pct(comedor, n) + "%",
         sub: `${comedor} hogares`,
         color: T.amber
-      })), /*#__PURE__*/React.createElement(Section, {
+      })), /*#__PURE__*/React.createElement(Indicator, {
+        title: "Inseguridad alimentaria (combinado)",
+        value: pct(alimUnion, n),
+        count: alimUnion,
+        total: n,
+        color: T.clay,
+        bg: T.claySoft,
+        icon: Utensils,
+        def: "Hogares que tuvieron que disminuir alguna comida diaria o que asisten a un comedor / reciben viandas \u2014 uni\xF3n de ambos, sin doble conteo."
+      }), /*#__PURE__*/React.createElement(Section, {
         title: "Pr\xE1cticas de cobranza coercitiva",
         hint: "Desagregadas por tipo \xB7 rojo = pr\xE1cticas graves",
         icon: ShieldAlert
