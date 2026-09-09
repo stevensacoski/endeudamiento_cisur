@@ -337,6 +337,14 @@
       maximumFractionDigits: 0
     }).format(Math.round(n)) : "—";
     const pct = (part, total) => total > 0 ? Math.round(part / total * 100) : 0;
+    const mean = arr => {
+      const a = arr.filter(x => isFinite(x));
+      return a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
+    };
+    const fmtDec = (n, d = 1) => isFinite(n) ? new Intl.NumberFormat("es-AR", {
+      minimumFractionDigits: d,
+      maximumFractionDigits: d
+    }).format(n) : "—";
     function num(v) {
       if (v == null || v === "") return NaN;
       if (typeof v === "number") return v;
@@ -395,6 +403,10 @@
         personasHogar: find("cuantas personas componen"),
         personasMayores: find("cuantas personas son mayores"),
         personasTrabajaron: find("cuantas tuvieron un trabajo"),
+        trabajosAportante: find("cuantos trabajos diferentes"),
+        horasAportante: find("cuantas horas trabaja"),
+        diasAportante: find("cuantos dias de la semana"),
+        volverTrabajo: find("cobraba el programa volver"),
         ingTrabajo: find("total de los ingresos producto del trabajo"),
         ingProgramas: find("por programas sociales"),
         ingJubil: find("jubilaciones"),
@@ -583,6 +595,10 @@
           personasHogar: num(g(r, C.personasHogar)),
           personasMayores: num(g(r, C.personasMayores)),
           personasTrabajaron: num(g(r, C.personasTrabajaron)),
+          trabajosAportante: num(g(r, C.trabajosAportante)),
+          horasAportante: num(g(r, C.horasAportante)),
+          diasAportante: num(g(r, C.diasAportante)),
+          volverTrabajo: (g(r, C.volverTrabajo) || "").toString().trim(),
           ingT,
           ingP,
           ingJ,
@@ -765,6 +781,10 @@
           personasHogar: 2 + Math.floor(Math.random() * 5),
           personasMayores: 1 + Math.floor(Math.random() * 3),
           personasTrabajaron: Math.floor(Math.random() * 3),
+          trabajosAportante: 1 + Math.floor(Math.random() * 2),
+          horasAportante: 6 + Math.floor(Math.random() * 6),
+          diasAportante: 4 + Math.floor(Math.random() * 3),
+          volverTrabajo: pick(["Nadie", "Nadie", "Nadie", "1 persona", "2 personas"]),
           ingT: ingTotal * 0.6,
           ingP: ingTotal * 0.3,
           ingJ: 0,
@@ -1074,6 +1094,8 @@
         data: data
       }) : tab === "hogares" ? /*#__PURE__*/React.createElement(Hogares, {
         data: data
+      }) : tab === "trabajo" ? /*#__PURE__*/React.createElement(Trabajo, {
+        data: data
       }) : tab === "deuda" ? /*#__PURE__*/React.createElement(Deuda, {
         data: data
       }) : /*#__PURE__*/React.createElement(Vulnerabilidad, {
@@ -1337,7 +1359,7 @@
       tab,
       setTab
     }) {
-      const items = [["avance", "Avance de campo", MapPin], ["hogares", "Perfil de hogares", Users], ["deuda", "Endeudamiento", Wallet], ["vuln", "Vulnerabilidad e impacto", ShieldAlert]];
+      const items = [["avance", "Avance de campo", MapPin], ["hogares", "Perfil de hogares", Users], ["trabajo", "Trabajo", HandCoins], ["deuda", "Endeudamiento", Wallet], ["vuln", "Vulnerabilidad e impacto", ShieldAlert]];
       return /*#__PURE__*/React.createElement("div", {
         className: "max-w-6xl mx-auto px-3 sm:px-5 pt-3"
       }, /*#__PURE__*/React.createElement("div", {
@@ -1366,9 +1388,19 @@
       const provincias = new Set(data.map(r => r.provincia));
       const deptos = new Set(data.map(r => r.provincia + "|" + r.departamento));
       const barrios = new Set(data.map(r => r.provincia + "|" + r.barrio));
-      const surveyors = new Set(data.map(r => r.surveyor));
       const byProv = countBy(data, r => r.provincia);
-      const bySurv = countBy(data, r => r.surveyor);
+      const promProv = provincias.size ? data.length / provincias.size : 0;
+      const byDepto = Object.entries(data.reduce((m, r) => {
+        const k = r.provincia + "§" + r.departamento;
+        m[k] = (m[k] || 0) + 1;
+        return m;
+      }, {})).map(([k, n]) => {
+        const [prov, depto] = k.split("§");
+        return {
+          label: `${depto} (${prov})`,
+          value: n
+        };
+      }).sort((a, b) => b.value - a.value);
       const timeSeries = useMemo(() => {
         const withDate = data.filter(r => r.submittedAt);
         if (!withDate.length) return null;
@@ -1429,10 +1461,10 @@
         color: T.olive,
         icon: Building2
       }), /*#__PURE__*/React.createElement(KPI, {
-        label: "Encuestadores/as",
-        value: fmtInt(surveyors.size),
+        label: "Prom. encuestas / provincia",
+        value: fmtDec(promProv, 1),
         color: T.amber,
-        icon: Users
+        icon: Activity
       })), timeSeries && /*#__PURE__*/React.createElement(Section, {
         title: "Ritmo de relevamiento",
         hint: "Encuestas cargadas por d\xEDa y total acumulado",
@@ -1515,13 +1547,13 @@
         showPct: true,
         denom: data.length
       })), /*#__PURE__*/React.createElement(Section, {
-        title: "Encuestas por encuestador/a",
-        icon: Users
+        title: "Encuestas por departamento",
+        hint: "Cada departamento con su provincia entre par\xE9ntesis",
+        icon: Building2
       }, /*#__PURE__*/React.createElement(RankBars, {
-        items: bySurv.map(d => ({
-          label: d.key,
-          value: d.n,
-          color: T.indigo
+        items: byDepto.map((d, i) => ({
+          ...d,
+          color: CAT[i % CAT.length]
         })),
         showPct: true,
         denom: data.length
@@ -1623,10 +1655,12 @@
       })).filter(x => x.value).sort((a, b) => b.value - a.value);
       const edades = histogram(data.map(r => r.edad).filter(isFinite), [18, 30, 40, 50, 60, 120], ["18–29", "30–39", "40–49", "50–59", "60+"]);
       const generos = countBy(data, r => r.genero);
+      const menoresProm = mean(data.map(r => isFinite(r.personasHogar) && isFinite(r.personasMayores) ? Math.max(r.personasHogar - r.personasMayores, 0) : NaN));
+      const mono = data.filter(r => r.personasMayores === 1 && r.personasHogar > 1).length;
       return /*#__PURE__*/React.createElement("div", {
         className: "mt-4 space-y-4"
       }, /*#__PURE__*/React.createElement("div", {
-        className: "grid grid-cols-2 md:grid-cols-4 gap-3"
+        className: "grid grid-cols-2 md:grid-cols-3 gap-3"
       }, /*#__PURE__*/React.createElement(KPI, {
         label: "Ingreso del hogar (mediana)",
         value: fmtARS(ingMed),
@@ -1641,6 +1675,18 @@
         value: fmtInt(hogarMed),
         sub: "personas",
         color: T.olive,
+        icon: Users
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Menores por hogar (promedio)",
+        value: fmtDec(menoresProm, 1),
+        sub: "personas \u2212 adultos",
+        color: T.amber,
+        icon: Users
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Hogares monomarentales",
+        value: pct(mono, data.length) + "%",
+        sub: `${fmtInt(mono)} de ${fmtInt(data.length)} · 1 adulto + convivientes`,
+        color: T.indigo,
         icon: Users
       }), /*#__PURE__*/React.createElement(KPI, {
         label: "Redujeron comidas",
@@ -1690,6 +1736,78 @@
         showPct: true,
         denom: data.length
       }))));
+    }
+
+    /* ─────────────────  TAB: TRABAJO  ───────────────── */
+    function Trabajo({
+      data
+    }) {
+      const adultosTot = data.reduce((s, r) => s + (isFinite(r.personasMayores) ? r.personasMayores : 0), 0);
+      const trabajanTot = data.reduce((s, r) => s + (isFinite(r.personasTrabajaron) ? r.personasTrabajaron : 0), 0);
+      const tasaOcup = adultosTot > 0 ? Math.round(trabajanTot / adultosTot * 100) : 0;
+      const trabajosProm = mean(data.map(r => r.trabajosAportante));
+      const horasProm = mean(data.map(r => r.horasAportante));
+      const diasProm = mean(data.map(r => r.diasAportante));
+      const conDato = data.filter(r => r.volverTrabajo);
+      const volverOrder = ["Nadie", "1 persona", "2 personas", "3 personas", "4 o más"];
+      const volver = ordered(countBy(conDato, r => r.volverTrabajo), volverOrder);
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-4 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Adultos que trabajan",
+        value: fmtInt(trabajanTot),
+        sub: `${tasaOcup}% de ${fmtInt(adultosTot)} adultos`,
+        color: T.petrol,
+        icon: HandCoins
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Trabajos por aportante (prom.)",
+        value: fmtDec(trabajosProm, 1),
+        sub: "principal aportante",
+        color: T.indigo,
+        icon: Layers
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Horas por d\xEDa (prom.)",
+        value: fmtDec(horasProm, 1),
+        sub: "aportante principal",
+        color: T.amber,
+        icon: Activity
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "D\xEDas por semana (prom.)",
+        value: fmtDec(diasProm, 1),
+        sub: "aportante principal",
+        color: T.olive,
+        icon: Activity
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Tasa de ocupaci\xF3n de personas adultas",
+        hint: "Integrantes que trabajaron la \xFAltima semana sobre el total de adultos de la selecci\xF3n",
+        icon: HandCoins
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: [{
+          label: "Trabajaron la última semana",
+          value: trabajanTot,
+          color: T.petrol
+        }, {
+          label: "No trabajaron",
+          value: Math.max(adultosTot - trabajanTot, 0),
+          color: T.line
+        }],
+        showPct: true,
+        denom: adultosTot
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Integrantes que cobraban el programa Volver al Trabajo",
+        hint: "Agosto 2026 (ex Salario Social Complementario)",
+        icon: HandCoins
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: volver.map(d => ({
+          label: d.key,
+          value: d.n,
+          color: d.key === "Nadie" ? T.faint : T.indigo
+        })),
+        showPct: true,
+        denom: conDato.length
+      })));
     }
 
     /* ─────────────────  TAB: ENDEUDAMIENTO  ───────────────── */
