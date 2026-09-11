@@ -382,6 +382,7 @@
     function resolveColumns(headers) {
       const H = headers.map(norm);
       const find = (...frags) => H.findIndex(h => frags.every(f => h.includes(norm(f))));
+      const findAll = (...frags) => H.reduce((acc, h, i) => frags.every(f => h.includes(norm(f))) ? [...acc, i] : acc, []);
       const findExact = label => H.findIndex(h => h === norm(label));
       const optionMap = (stem, keys) => {
         const out = {};
@@ -443,6 +444,8 @@
         otro: findExact("Otro")
       };
       C.nSi = findExact("n_si");
+      // "¿cómo estás pagando el resumen de la tarjeta?" se repite hasta 3 veces (una por bloque de deuda)
+      C.pagoTarjetaBlocks = findAll("resumen de la tarjeta");
       // debt detail blocks — anchor + fixed offsets
       C.debtBlocks = [find("deuda n"), find("2da deuda"), find("3ra deuda")].map(a => a < 0 ? null : {
         tipo: a,
@@ -570,10 +573,10 @@
         const creditors = {};
         for (const k in C.creditors) creditors[k] = isSi(g(r, C.creditors[k]));
         const debts = [];
-        for (const b of C.debtBlocks) {
-          if (!b) continue;
+        C.debtBlocks.forEach((b, bi) => {
+          if (!b) return;
           const tipo = g(r, b.tipo);
-          if (tipo && norm(tipo).includes("no tengo otra")) continue;
+          if (tipo && norm(tipo).includes("no tengo otra")) return;
           // al_día robusto: usar +6; si no es una categoría BCRA (por celdas combinadas), escanear el bloque
           let alDia = g(r, b.alDia);
           if (!isBcraBucket(alDia)) {
@@ -586,7 +589,8 @@
             }
           }
           const hasReal = !!tipo && norm(tipo) !== "";
-          if (!hasReal && !isBcraBucket(alDia)) continue; // slot vacío ("no tengo otra deuda")
+          if (!hasReal && !isBcraBucket(alDia)) return; // slot vacío ("no tengo otra deuda")
+          const pagoTarjetaIdx = C.pagoTarjetaBlocks[bi];
           debts.push({
             tipo: String(tipo || ""),
             motivo: g(r, b.motivo),
@@ -595,9 +599,10 @@
             valorCuota: num(g(r, b.valorCuota)),
             debeHoy: num(g(r, b.debeHoy)),
             alDia,
-            modalidad: g(r, b.modalidad)
+            modalidad: g(r, b.modalidad),
+            pagoTarjeta: pagoTarjetaIdx != null && pagoTarjetaIdx >= 0 ? (g(r, pagoTarjetaIdx) || "").toString().trim() : ""
           });
-        }
+        });
         const arrearsCount = debts.filter(d => isArrears(d.alDia)).length;
         const moraCount = debts.filter(d => isMora(d.alDia)).length;
         const creditorsCount = Object.entries(creditors).filter(([k, v]) => k !== "otro" && v).length;
@@ -638,6 +643,7 @@
           montos: Object.fromEntries(Object.entries(C.montos).map(([k, i]) => [k, num(g(r, i))])),
           gastosTop,
           consent: isSi(g(r, C.consent)),
+          declinedConsent: norm(g(r, C.consent)) === "no",
           tieneDeuda,
           antiguedad: (g(r, C.antiguedad) || "").toString().trim(),
           creditors,
@@ -756,6 +762,7 @@
       const acreedores = ["Préstamo por app o fintech (Mercado Pago/Crédito, Ualá, Naranja X, Personal Pay u otras)", "Saldo o cuotas de tarjeta de crédito bancaria (Visa, Mastercard u otras)", "Préstamo de prestamista particular o del barrio", "Préstamo de familiar, amigo/a o conocido/a", "Fiado o cuenta pendiente en almacén, súper u otro comercio del barrio", "Préstamo de financiera (Credil, Crédito Argentino u otras)"];
       const prop = ["Menos del 10%", "Entre 10% y 25%", "Entre 25% y 50%", "Más del 50%"];
       const cap = ["Sin dificultad", "Con cierta dificultad", "Con mucha dificultad", "No puede pagarlas"];
+      const tarjetaPagoOpts = ["Pagando el total del resumen", "Pagando solo el pago mínimo", "No estoy pagando el resumen"];
       const recs = [];
       for (let i = 0; i < 52; i++) {
         const [p, d, l, b] = pick(geo);
@@ -764,15 +771,17 @@
           length: nd
         }, () => {
           const ini = [200000, 300000, 500000, 800000, 1200000, 2000000][Math.floor(Math.random() * 6)];
+          const tipo = pick(acreedores);
           return {
-            tipo: pick(acreedores),
+            tipo,
             montoInicial: ini,
             cuotas: pick([6, 12, 18, 24]),
             valorCuota: Math.round(ini / 10),
             debeHoy: Math.round(ini * (0.4 + Math.random())),
             alDia: pick(bcra),
             modalidad: "Cuotas mensuales",
-            motivo: "Alimentación"
+            motivo: "Alimentación",
+            pagoTarjeta: norm(tipo).includes("tarjeta") ? pick(tarjetaPagoOpts) : ""
           };
         });
         const cr = {};
@@ -839,6 +848,7 @@
           },
           gastosTop: new Set(["alimentacion", "servicios"]),
           consent: true,
+          declinedConsent: false,
           tieneDeuda: nd > 0,
           antiguedad: pick(["Hace menos de 6 meses", "Entre 6 meses y 1 año", "Entre 1 y 2 años", "Entre 2 y 4 años"]),
           creditors: cr,
@@ -1030,7 +1040,7 @@
             headers,
             rows
           } = await fetchLive();
-          const recs = buildRecords(headers, rows);
+          const recs = buildRecords(headers, rows).filter(r => !r.declinedConsent);
           setRecords(recs);
           setMeta({
             source: "live",
@@ -1054,7 +1064,7 @@
             headers,
             rows
           } = tableFromWorkbook(ab);
-          const recs = buildRecords(headers, rows);
+          const recs = buildRecords(headers, rows).filter(r => !r.declinedConsent);
           setRecords(recs);
           setMeta({
             source: "file:" + file.name,
@@ -2052,11 +2062,30 @@
       const n = data.length;
       const conDeuda = data.filter(r => r.tieneDeuda);
       const nD = conDeuda.length;
-      const atraso = data.filter(r => r.inArrears).length;
-      const mora = data.filter(r => r.inMora).length;
+      // Mora y atraso son mutuamente excluyentes: primero se identifica la mora (90+ días),
+      // y luego el atraso entre los hogares restantes (no al día, pero sin ninguna deuda en mora).
+      // Ambos se calculan sobre el universo de hogares endeudados (nD), no sobre el total de encuestas.
+      const mora = conDeuda.filter(r => r.inMora).length;
+      const atraso = conDeuda.filter(r => r.inArrears && !r.inMora).length;
+      const alDiaHog = nD - mora - atraso;
       const sobre = data.filter(r => r.overIndebted).length;
       const nsiBase = data.map(r => isFinite(r.nSi) && r.nSi > 0 ? r.nSi : r.creditorsCount).filter(x => x > 0);
       const acreedProm = mean(nsiBase);
+      const totalDeudaHogar = r => r.debts.reduce((s, d) => s + (isFinite(d.debeHoy) ? d.debeHoy : 0), 0);
+      const deudaProm = mean(conDeuda.map(totalDeudaHogar).filter(x => x > 0));
+      const estadoDeuda = [{
+        name: "Al día",
+        v: alDiaHog,
+        c: T.petrol
+      }, {
+        name: "Atrasado",
+        v: atraso,
+        c: T.amber
+      }, {
+        name: "En mora",
+        v: mora,
+        c: T.clay
+      }].filter(x => x.v > 0);
       const credLbl = {
         banco: "Banco / crédito personal",
         financiera: "Financiera",
@@ -2158,6 +2187,32 @@
         value: d.n,
         color: norm(d.key).includes("al dia") ? T.petrol : norm(d.key).includes("no sabe") ? T.faint : T.amber
       }));
+      const tarjetaDebts = [];
+      conDeuda.forEach(r => r.debts.forEach(d => {
+        if (norm(d.tipo).includes("tarjeta")) tarjetaDebts.push(d.pagoTarjeta);
+      }));
+      const pagoTarjetaColor = label => {
+        const nl = norm(label);
+        if (nl.includes("minim")) return T.amber;
+        if (nl.includes("no est") && nl.includes("pag")) return T.clay;
+        if (nl.includes("total") || nl.includes("complet")) return T.petrol;
+        return T.faint;
+      };
+      const pagoTarjeta = countBy(tarjetaDebts.filter(Boolean), x => x).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: pagoTarjetaColor(d.key)
+      }));
+      const refinancioSi = conDeuda.filter(r => r.refinancio).length;
+      const refinancio = [{
+        label: "S\xED, tuvo que refinanciar",
+        value: refinancioSi,
+        color: T.clay
+      }, {
+        label: "No",
+        value: nD - refinancioSi,
+        color: T.olive
+      }];
       return /*#__PURE__*/React.createElement("div", {
         className: "mt-4 space-y-4"
       }, /*#__PURE__*/React.createElement("div", {
@@ -2173,22 +2228,22 @@
         def: "Hogares con al menos una deuda, pr\xE9stamo o pago pendiente vigente."
       }), /*#__PURE__*/React.createElement(Indicator, {
         title: "Atraso",
-        value: pct(atraso, n),
+        value: pct(atraso, nD),
         count: atraso,
-        total: n,
+        total: nD,
         color: T.amber,
         bg: T.amberSoft,
         icon: TrendingDown,
-        def: "Hogares con al menos una deuda que no est\xE1 al d\xEDa (cualquier tramo de atraso)."
+        def: "Hogares endeudados con alguna deuda no al d\xEDa pero sin ninguna en mora (90+ d\xEDas). Sobre el total de hogares endeudados; excluyente con mora."
       }), /*#__PURE__*/React.createElement(Indicator, {
         title: "Mora (90+ d\xEDas)",
-        value: pct(mora, n),
+        value: pct(mora, nD),
         count: mora,
-        total: n,
+        total: nD,
         color: T.clay,
         bg: T.claySoft,
         icon: AlertTriangle,
-        def: "Hogares con al menos una deuda con atraso de 90 d\xEDas o m\xE1s (situaci\xF3n BCRA)."
+        def: "Hogares endeudados con al menos una deuda con atraso de 90 d\xEDas o m\xE1s (situaci\xF3n BCRA). Sobre el total de hogares endeudados; excluyente con atraso."
       }), /*#__PURE__*/React.createElement(Indicator, {
         title: "Sobreendeudamiento",
         value: pct(sobre, n),
@@ -2206,7 +2261,31 @@
         sub: "entre hogares endeudados \xB7 columna n_si",
         color: T.petrol,
         icon: HandCoins
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Deuda promedio por hogar",
+        value: fmtARS(deudaProm),
+        sub: "suma de lo que debe hoy por cada deuda \xB7 entre hogares endeudados",
+        color: T.clay,
+        icon: Wallet
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Estado de la deuda",
+        hint: "Sobre el 100% de los hogares endeudados \xB7 mora y atraso son excluyentes",
+        icon: TrendingDown
+      }, /*#__PURE__*/React.createElement(Donut, {
+        data: estadoDeuda,
+        fmt: fmtInt,
+        suffix: " hogares"
       })), /*#__PURE__*/React.createElement(Section, {
+        title: "Formal vs. informal",
+        hint: "Hogares que usan cada tipo de fuente",
+        icon: Layers
+      }, /*#__PURE__*/React.createElement(Donut, {
+        data: spectrum,
+        fmt: fmtInt,
+        suffix: " hogares"
+      }))), /*#__PURE__*/React.createElement(Section, {
         title: "Espectro de acreedores",
         hint: "Prevalencia por tipo de fuente \xB7 un hogar puede tener varias",
         icon: HandCoins,
@@ -2226,22 +2305,12 @@
         items: cred,
         showPct: true,
         denom: n
-      })), /*#__PURE__*/React.createElement("div", {
-        className: "grid md:grid-cols-2 gap-4"
-      }, /*#__PURE__*/React.createElement(Section, {
-        title: "Formal vs. informal",
-        hint: "Hogares que usan cada tipo de fuente",
-        icon: Layers
-      }, /*#__PURE__*/React.createElement(Donut, {
-        data: spectrum,
-        fmt: fmtInt,
-        suffix: " hogares"
       })), /*#__PURE__*/React.createElement(Section, {
         title: "Se\xF1ales de alerta",
         hint: "Motores emergentes de endeudamiento",
         icon: AlertTriangle
       }, /*#__PURE__*/React.createElement("div", {
-        className: "grid grid-cols-2 gap-3"
+        className: "grid grid-cols-2 sm:grid-cols-4 gap-3"
       }, /*#__PURE__*/React.createElement(MiniStat, {
         label: "Fintech / billeteras",
         value: pct(fintech, n),
@@ -2266,7 +2335,7 @@
         count: bicicleta,
         icon: Recycle,
         color: T.amber
-      })))), /*#__PURE__*/React.createElement("div", {
+      }))), /*#__PURE__*/React.createElement("div", {
         className: "grid md:grid-cols-2 gap-4"
       }, /*#__PURE__*/React.createElement(Section, {
         title: "\xBFA qu\xE9 atribuyen el endeudamiento?",
@@ -2291,7 +2360,25 @@
         items: bcra,
         showPct: true,
         denom: totalDebts
-      })));
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Pago del resumen de tarjeta",
+        hint: `Sobre ${fmtInt(tarjetaDebts.filter(Boolean).length)} deudas de tarjeta declaradas (hasta 3 por hogar)`,
+        icon: HandCoins
+      }, pagoTarjeta.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: pagoTarjeta,
+        showPct: true,
+        denom: tarjetaDebts.filter(Boolean).length
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "\xBFTuvo que refinanciar alguna deuda?",
+        hint: "Entre hogares endeudados",
+        icon: Recycle
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: refinancio,
+        showPct: true,
+        denom: nD
+      }))));
     }
 
     /* ─────────────────  TAB: VULNERABILIDAD  ───────────────── */
@@ -2299,6 +2386,20 @@
       data
     }) {
       const n = data.length;
+      const conDeuda = data.filter(r => r.tieneDeuda);
+      const nD = conDeuda.length;
+      const propOrder = ["Menos del 10%", "Entre 10% y 25%", "Entre 25% y 50%", "Más del 50%", "No sabe"];
+      const propIng = ordered(countBy(conDeuda.filter(r => r.propIngreso), r => r.propIngreso), propOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: ["Entre 25% y 50%", "Más del 50%"].includes(d.key) ? T.clay : d.key === "No sabe" ? T.faint : T.amber
+      }));
+      const capOrder = ["Sin dificultad", "Con cierta dificultad", "Con mucha dificultad", "No puede pagarlas"];
+      const capacidadPago = ordered(countBy(conDeuda.filter(r => r.capacidad), r => r.capacidad), capOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: ["Con mucha dificultad", "No puede pagarlas"].includes(d.key) ? T.clay : d.key === "Sin dificultad" ? T.olive : T.amber
+      }));
       const coLbl = {
         llamados: "Llamados / mensajes reiterados",
         contacto_terceros: "Contacto a familiares o trabajo",
@@ -2308,7 +2409,7 @@
         amenazas_fisicas: "Amenazas o daños físicos",
         retencion_bienes: "Retención de documentos o bienes"
       };
-      const grave = ["amenazas_fisicas", "retencion_bienes"];
+      const grave = ["amenazas_fisicas", "retencion_bienes", "amenazas_verbales"];
       const co = Object.keys(coLbl).map(k => ({
         label: coLbl[k],
         value: data.filter(r => r.coercion.has(k)).length,
@@ -2317,7 +2418,7 @@
       const conCoercion = data.filter(r => [...r.coercion].some(k => k !== "sin_presion" && k !== "prefiere_no")).length;
       const conGrave = data.filter(r => grave.some(k => r.coercion.has(k))).length;
       const nivelOrder = ["Nada", "Un poco", "Bastante", "Mucho", "Muchísimo"];
-      const nivel = ordered(countBy(data, r => r.afectacionNivel), nivelOrder).filter(d => d.key).map((d, i) => ({
+      const nivel = ordered(countBy(conDeuda, r => r.afectacionNivel), nivelOrder).filter(d => d.key && d.key !== "Sin dato").map((d, i) => ({
         label: d.key,
         value: d.n,
         color: ["#9AA0A6", T.olive, T.amber, "#C25B3A", T.clay][nivelOrder.indexOf(d.key)] || T.petrol
@@ -2356,22 +2457,11 @@
       const comedor = data.filter(r => r.comedor).length;
       const alimUnion = data.filter(r => r.disminuyoComida || r.comedor).length;
       const sitOrder = ["Empeoró", "Se mantuvo igual", "Mejoró"];
-      const sit = ordered(countBy(data, r => r.situacion), sitOrder).filter(d => d.key).map(d => ({
+      const sit = ordered(countBy(data, r => r.situacion), sitOrder).filter(d => d.key && d.key !== "Sin dato").map(d => ({
         label: d.key,
         value: d.n,
         color: d.key === "Empeoró" ? T.clay : d.key === "Mejoró" ? T.olive : T.faint
       }));
-
-      // gender × over-indebtedness
-      const gx = ["Mujer", "Varón"].map(g => {
-        const sub = data.filter(r => r.genero === g);
-        return {
-          genero: g,
-          n: sub.length,
-          sobre: sub.filter(r => r.overIndebted).length,
-          coer: sub.filter(r => [...r.coercion].some(k => k !== "sin_presion" && k !== "prefiere_no")).length
-        };
-      }).filter(x => x.n);
       return /*#__PURE__*/React.createElement("div", {
         className: "mt-4 space-y-4"
       }, /*#__PURE__*/React.createElement("div", {
@@ -2420,12 +2510,12 @@
         className: "grid md:grid-cols-2 gap-4"
       }, /*#__PURE__*/React.createElement(Section, {
         title: "Impacto en el bienestar",
-        hint: "Cu\xE1nto afectan las deudas la vida diaria",
+        hint: "Cu\xE1nto afectan las deudas la vida diaria \xB7 entre hogares endeudados",
         icon: Activity
       }, /*#__PURE__*/React.createElement(RankBars, {
         items: nivel,
         showPct: true,
-        denom: n
+        denom: nD
       })), /*#__PURE__*/React.createElement(Section, {
         title: "\xC1mbitos afectados",
         hint: "Respuesta m\xFAltiple",
@@ -2445,6 +2535,22 @@
       })), /*#__PURE__*/React.createElement("div", {
         className: "grid md:grid-cols-2 gap-4"
       }, /*#__PURE__*/React.createElement(Section, {
+        title: "Proporci\xF3n del ingreso destinada a pagar deudas",
+        hint: "Entre hogares endeudados",
+        icon: Info
+      }, propIng.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: propIng,
+        showPct: true,
+        denom: nD
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "Capacidad de pago percibida",
+        hint: "Entre hogares endeudados",
+        icon: Info
+      }, capacidadPago.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: capacidadPago,
+        showPct: true,
+        denom: nD
+      }) : /*#__PURE__*/React.createElement(Empty, null))), /*#__PURE__*/React.createElement(Section, {
         title: "Situaci\xF3n econ\xF3mica percibida",
         hint: "En el \xFAltimo a\xF1o",
         icon: Info
@@ -2452,76 +2558,7 @@
         items: sit,
         showPct: true,
         denom: n
-      })), gx.length > 0 && /*#__PURE__*/React.createElement(Section, {
-        title: "Brecha de g\xE9nero",
-        hint: "Sobreendeudamiento y cobranza coercitiva por g\xE9nero de la persona encuestada",
-        icon: Users
-      }, /*#__PURE__*/React.createElement("div", {
-        className: "space-y-3"
-      }, gx.map(g => /*#__PURE__*/React.createElement("div", {
-        key: g.genero
-      }, /*#__PURE__*/React.createElement("div", {
-        className: "flex justify-between text-xs mb-1"
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: T.ink
-        },
-        className: "font-medium"
-      }, g.genero), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: T.faint
-        }
-      }, "n=", g.n)), /*#__PURE__*/React.createElement("div", {
-        className: "flex gap-2"
-      }, /*#__PURE__*/React.createElement("div", {
-        className: "flex-1"
-      }, /*#__PURE__*/React.createElement("div", {
-        className: "flex justify-between text-xs mb-0.5"
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: T.muted
-        }
-      }, "Sobreendeud."), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: T.clay
-        },
-        className: "font-medium"
-      }, pct(g.sobre, g.n), "%")), /*#__PURE__*/React.createElement("div", {
-        style: {
-          background: T.paper
-        },
-        className: "h-1.5 rounded-full"
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          width: pct(g.sobre, g.n) + "%",
-          background: T.clay
-        },
-        className: "h-full rounded-full"
-      }))), /*#__PURE__*/React.createElement("div", {
-        className: "flex-1"
-      }, /*#__PURE__*/React.createElement("div", {
-        className: "flex justify-between text-xs mb-0.5"
-      }, /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: T.muted
-        }
-      }, "Cobranza coerc."), /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: T.amber
-        },
-        className: "font-medium"
-      }, pct(g.coer, g.n), "%")), /*#__PURE__*/React.createElement("div", {
-        style: {
-          background: T.paper
-        },
-        className: "h-1.5 rounded-full"
-      }, /*#__PURE__*/React.createElement("div", {
-        style: {
-          width: pct(g.coer, g.n) + "%",
-          background: T.amber
-        },
-        className: "h-full rounded-full"
-      }))))))))));
+      })));
     }
 
     /* ─────────────────  SHARED WIDGETS  ───────────────── */
