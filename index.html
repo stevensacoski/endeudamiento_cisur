@@ -303,6 +303,7 @@
     /* ==== app ==== */
     const SHEET_ID = "1LFn_0xDGdFPXnYH3G7jxdJoIvebt_6JhX10ekhRADBQ";
     const SHEET_NAME = "datos";
+    const SHEET_TRABAJOS = "trabajos";
     const GVIZ_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}&headers=1`;
 
     /* ─────────────────────────  THEME  ───────────────────────── */
@@ -425,7 +426,8 @@
         deudaPasada: find("ya no considera que tiene"),
         submitted: findExact("_submission_time"),
         surveyor: findExact("_submitted_by"),
-        idx: findExact("_index")
+        idx: findExact("_index"),
+        uuid: findExact("_uuid")
       };
       // creditor prevalence (Sí/No) — matched to the exact 12 columns (avoid the generic "¿tiene deuda?" text)
       C.creditors = {
@@ -671,9 +673,47 @@
           oiB,
           oiC,
           submittedAt: parseGvizDate(g(r, C.submitted)),
-          surveyor: (g(r, C.surveyor) || "").toString().trim() || "Sin dato"
+          surveyor: (g(r, C.surveyor) || "").toString().trim() || "Sin dato",
+          uuid: (g(r, C.uuid) || "").toString().trim(),
+          trabajos: []
         };
       });
+    }
+
+    /* ─────────────────  TRABAJOS (repeat group)  ───────────────── */
+    function parseTrabajos(headers, rows) {
+      const H = headers.map(norm);
+      const findExact = label => H.findIndex(h => h === norm(label));
+      const find = (...frags) => H.findIndex(h => frags.every(f => h.includes(norm(f))));
+      const idxUuid = findExact("_submission__uuid");
+      // El nombre del header es literal: "El ${ord_trabajo} trabajo lo realizó de manera…"
+      const idxModalidad = find("trabajo lo realiz", "de manera");
+      const idxOrd = findExact("ord_trabajo");
+      if (idxUuid < 0 || idxModalidad < 0) return [];
+      const out = [];
+      rows.forEach(r => {
+        const uuid = (r[idxUuid] || "").toString().trim();
+        const modalidad = (r[idxModalidad] || "").toString().trim();
+        if (!uuid || !modalidad) return;
+        out.push({
+          uuid,
+          modalidad,
+          ord: idxOrd >= 0 ? (r[idxOrd] || "").toString().trim() : ""
+        });
+      });
+      return out;
+    }
+    function mergeTrabajos(records, trabajos) {
+      if (!trabajos || !trabajos.length) return records;
+      const byUuid = {};
+      trabajos.forEach(t => {
+        if (!byUuid[t.uuid]) byUuid[t.uuid] = [];
+        byUuid[t.uuid].push(t);
+      });
+      records.forEach(r => {
+        if (r.uuid && byUuid[r.uuid]) r.trabajos = byUuid[r.uuid];
+      });
+      return records;
     }
 
     /* ─────────────────  DATA SOURCES  ───────────────── */
@@ -695,10 +735,10 @@
         rows
       };
     }
-    function fetchLiveJsonp() {
+    function fetchSheetJsonp(sheetName) {
       return new Promise((resolve, reject) => {
         const cb = "gvizcb_" + Math.floor(Math.random() * 1e9);
-        const url = "https://docs.google.com/spreadsheets/d/" + SHEET_ID + "/gviz/tq?tqx=out:json;responseHandler:" + cb + "&sheet=" + encodeURIComponent(SHEET_NAME) + "&headers=1";
+        const url = "https://docs.google.com/spreadsheets/d/" + SHEET_ID + "/gviz/tq?tqx=out:json;responseHandler:" + cb + "&sheet=" + encodeURIComponent(sheetName) + "&headers=1";
         const s = document.createElement("script");
         let done = false;
         const cleanup = () => {
@@ -721,7 +761,7 @@
         };
         s.onerror = () => {
           if (!done) {
-            reject(new Error("No se pudo leer la hoja (verificá que est\u00e9 compartida como \u201cCualquiera con el enlace: Lector\u201d)."));
+            reject(new Error("No se pudo leer la hoja \u201c" + sheetName + "\u201d (verificá que est\u00e9 compartida como \u201cCualquiera con el enlace: Lector\u201d)."));
             cleanup();
           }
         };
@@ -736,14 +776,18 @@
       });
     }
     async function fetchLive() {
-      return fetchLiveJsonp();
+      // La hoja "datos" es obligatoria; "trabajos" es opcional (no rompe si falta).
+      const datos = await fetchSheetJsonp(SHEET_NAME);
+      let trabajos = { headers: [], rows: [] };
+      try {
+        trabajos = await fetchSheetJsonp(SHEET_TRABAJOS);
+      } catch (e) {
+        console.warn("No se pudo leer la hoja trabajos:", e && e.message);
+      }
+      return { datos, trabajos };
     }
-    function tableFromWorkbook(ab) {
-      const wb = XLSX.read(ab, {
-        type: "array"
-      });
-      const name = wb.SheetNames.find(n => norm(n).includes("datos")) || wb.SheetNames[0];
-      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], {
+    function sheetToAoa(ws) {
+      const aoa = XLSX.utils.sheet_to_json(ws, {
         header: 1,
         defval: "",
         raw: true
@@ -752,6 +796,14 @@
         headers: (aoa[0] || []).map(String),
         rows: aoa.slice(1).filter(r => r.some(c => c !== "" && c != null))
       };
+    }
+    function tableFromWorkbook(ab) {
+      const wb = XLSX.read(ab, { type: "array" });
+      const nameDatos = wb.SheetNames.find(n => norm(n).includes("datos")) || wb.SheetNames[0];
+      const nameTrab = wb.SheetNames.find(n => norm(n).includes("trabajo"));
+      const datos = sheetToAoa(wb.Sheets[nameDatos]);
+      const trabajos = nameTrab ? sheetToAoa(wb.Sheets[nameTrab]) : { headers: [], rows: [] };
+      return { datos, trabajos };
     }
 
     /* ─────────────────  SYNTHETIC DEMO DATA  ───────────────── */
@@ -877,7 +929,18 @@
           oiB: ["con mucha dificultad", "no puede pagarlas"].includes(norm(capV)),
           oiC: redujo.has("alimentacion"),
           submittedAt: new Date(2026, 8, 1 + Math.floor(i / 7)),
-          surveyor: pick(["encuestador1", "encuestador2", "encuestador3", "encuestador4"])
+          surveyor: pick(["encuestador1", "encuestador2", "encuestador3", "encuestador4"]),
+          uuid: "demo-" + i,
+          trabajos: (function () {
+            const modOpts = ["Informal (en negro)", "Formal (en blanco)", "Independiente", "Trabajo a través de aplicaciones", "Trabajo en cooperativa"];
+            const nT = Math.random() < 0.55 ? 1 : Math.random() < 0.8 ? 2 : 3;
+            const ords = ["primer", "segundo", "tercer"];
+            return Array.from({ length: nT }, (_, k) => ({
+              uuid: "demo-" + i,
+              modalidad: pick(modOpts),
+              ord: ords[k]
+            }));
+          })()
         });
       }
       return recs;
@@ -1036,11 +1099,10 @@
       const loadLive = useCallback(async () => {
         setStatus("loading");
         try {
-          const {
-            headers,
-            rows
-          } = await fetchLive();
-          const recs = buildRecords(headers, rows).filter(r => !r.declinedConsent);
+          const { datos, trabajos } = await fetchLive();
+          let recs = buildRecords(datos.headers, datos.rows).filter(r => !r.declinedConsent);
+          const tr = parseTrabajos(trabajos.headers || [], trabajos.rows || []);
+          recs = mergeTrabajos(recs, tr);
           setRecords(recs);
           setMeta({
             source: "live",
@@ -1060,11 +1122,10 @@
         setStatus("loading");
         try {
           const ab = await file.arrayBuffer();
-          const {
-            headers,
-            rows
-          } = tableFromWorkbook(ab);
-          const recs = buildRecords(headers, rows).filter(r => !r.declinedConsent);
+          const { datos, trabajos } = tableFromWorkbook(ab);
+          let recs = buildRecords(datos.headers, datos.rows).filter(r => !r.declinedConsent);
+          const tr = parseTrabajos(trabajos.headers || [], trabajos.rows || []);
+          recs = mergeTrabajos(recs, tr);
           setRecords(recs);
           setMeta({
             source: "file:" + file.name,
@@ -1996,6 +2057,83 @@
       const conDato = data.filter(r => r.volverTrabajo);
       const volverOrder = ["Nadie", "1 persona", "2 personas", "3 personas", "4 o más"];
       const volver = ordered(countBy(conDato, r => r.volverTrabajo), volverOrder);
+      // Modalidad de trabajos (repeat group "trabajos")
+      const trabajosFlat = [];
+      const hogaresConTrabajos = new Set();
+      data.forEach(r => {
+        if (r.trabajos && r.trabajos.length) {
+          r.trabajos.forEach(t => {
+            if (t.modalidad) trabajosFlat.push(t);
+          });
+          hogaresConTrabajos.add(r.uuid || r.idx);
+        }
+      });
+      const modalidadColor = label => {
+        const nl = norm(label);
+        if (nl.includes("informal") || nl.includes("negro")) return T.clay;
+        if (nl.includes("formal") || nl.includes("blanco")) return T.petrol;
+        if (nl.includes("independiente")) return T.indigo;
+        if (nl.includes("aplicacion") || nl.includes("plataforma")) return T.amber;
+        if (nl.includes("cooperativa")) return T.olive;
+        if (nl.includes("apuesta") || nl.includes("inversion") || nl.includes("virtual")) return T.clay;
+        if (nl.includes("programa")) return "#6B5B95";
+        if (nl.includes("familiar")) return T.faint;
+        return T.faint;
+      };
+      const modalidadOrder = ["Informal (en negro)", "Formal (en blanco)", "Independiente", "Trabajo a través de aplicaciones", "Trabajo en cooperativa", "Trabajo de programas sociales", "Trabajo familiar", "Trabajo virtual (apuestas, inversiones, etc.)"];
+      const modalidadCounts = countBy(trabajosFlat, t => t.modalidad);
+      const modalidad = ordered(modalidadCounts, modalidadOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: modalidadColor(d.key)
+      }));
+      // Volver al Trabajo — impacto de la discontinuación
+      // 1 persona = $70.000; 4 o más = 4 personas ($280.000).
+      const volverPersonas = label => {
+        const nl = norm(label);
+        if (nl.includes("1 persona")) return 1;
+        if (nl.includes("2 persona")) return 2;
+        if (nl.includes("3 persona")) return 3;
+        if (nl.includes("4 o mas") || nl.includes("4 o más") || nl.includes("4 personas") || nl.includes("mas de 4")) return 4;
+        return 0;
+      };
+      const VOLVER_MONTO = 70000;
+      const conVolver = data.filter(r => {
+        const p = volverPersonas(r.volverTrabajo);
+        return p > 0;
+      }).map(r => {
+        const p = volverPersonas(r.volverTrabajo);
+        const perdido = p * VOLVER_MONTO;
+        // El ingreso actual ya NO incluye Volver (el programa se discontinuó).
+        // "Ingreso previo" reconstruido = ingreso actual + monto perdido.
+        const ingresoPrevio = (r.ingTotal || 0) + perdido;
+        const pctPerdido = ingresoPrevio > 0 ? perdido / ingresoPrevio : NaN;
+        return { r, personas: p, perdido, ingresoPrevio, pctPerdido };
+      });
+      const sinVolver = data.filter(r => volverPersonas(r.volverTrabajo) === 0);
+      const nVolver = conVolver.length;
+      // Distribución del impacto (% del ingreso previo perdido)
+      const impactoTramos = [
+        { label: "Menos del 10%", min: 0, max: 0.10, color: T.olive },
+        { label: "Entre 10% y 25%", min: 0.10, max: 0.25, color: T.amber },
+        { label: "Entre 25% y 50%", min: 0.25, max: 0.50, color: T.clay },
+        { label: "Más del 50%", min: 0.50, max: Infinity, color: "#7A2818" }
+      ].map(t => ({
+        label: t.label,
+        value: conVolver.filter(x => isFinite(x.pctPerdido) && x.pctPerdido >= t.min && x.pctPerdido < t.max).length,
+        color: t.color
+      }));
+      // Medianas para KPIs y comparación
+      const ingMedVolver = median(conVolver.map(x => x.r.ingTotal).filter(v => v > 0));
+      const ingMedSinVolver = median(sinVolver.map(r => r.ingTotal).filter(v => v > 0));
+      const perdidoMed = median(conVolver.map(x => x.perdido));
+      const pctPerdidoMed = median(conVolver.map(x => x.pctPerdido).filter(isFinite));
+      // Indicadores comparados
+      const pctIn = (arr, pred) => arr.length ? Math.round(arr.filter(pred).length / arr.length * 100) : 0;
+      const cmpEndeudados = { v: pctIn(conVolver.map(x => x.r), r => r.tieneDeuda), s: pctIn(sinVolver, r => r.tieneDeuda) };
+      const cmpMora = { v: pctIn(conVolver.map(x => x.r), r => r.inMora), s: pctIn(sinVolver, r => r.inMora) };
+      const cmpAlim = { v: pctIn(conVolver.map(x => x.r), r => r.disminuyoComida), s: pctIn(sinVolver, r => r.disminuyoComida) };
+      const cmpSobre = { v: pctIn(conVolver.map(x => x.r), r => r.overIndebted), s: pctIn(sinVolver, r => r.overIndebted) };
       return /*#__PURE__*/React.createElement("div", {
         className: "mt-4 space-y-4"
       }, /*#__PURE__*/React.createElement("div", {
@@ -2041,6 +2179,14 @@
         showPct: true,
         denom: adultosTot
       })), /*#__PURE__*/React.createElement(Section, {
+        title: "Modalidad de los trabajos declarados",
+        hint: `Sobre ${fmtInt(trabajosFlat.length)} trabajos de ${fmtInt(hogaresConTrabajos.size)} hogares con detalle (hasta 3 por hogar)`,
+        icon: Layers
+      }, trabajosFlat.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: modalidad,
+        showPct: true,
+        denom: trabajosFlat.length
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
         title: "Integrantes que cobraban el programa Volver al Trabajo",
         hint: "Agosto 2026 (ex Salario Social Complementario)",
         icon: HandCoins
@@ -2052,7 +2198,163 @@
         })),
         showPct: true,
         denom: conDato.length
-      })));
+      })), nVolver > 0 && /*#__PURE__*/React.createElement(VolverImpacto, {
+        nVolver,
+        nTotal: data.length,
+        ingMedVolver,
+        ingMedSinVolver,
+        perdidoMed,
+        pctPerdidoMed,
+        impactoTramos,
+        cmp: { endeudados: cmpEndeudados, mora: cmpMora, alim: cmpAlim, sobre: cmpSobre },
+        nSinVolver: sinVolver.length
+      }));
+    }
+
+    /* ─────────────────  VOLVER AL TRABAJO — IMPACTO  ───────────────── */
+    function VolverImpacto({ nVolver, nTotal, ingMedVolver, ingMedSinVolver, perdidoMed, pctPerdidoMed, impactoTramos, cmp, nSinVolver }) {
+      const CmpRow = ({ label, v, s, invert }) => {
+        // invert=true significa "más alto es peor" (default). Coloreo en clay si Volver > Sin Volver.
+        const worse = v > s;
+        return /*#__PURE__*/React.createElement("div", {
+          className: "grid grid-cols-5 gap-2 items-center py-2",
+          style: { borderTop: `1px solid ${T.paper}` }
+        }, /*#__PURE__*/React.createElement("div", {
+          className: "col-span-2 text-xs",
+          style: { color: T.ink }
+        }, label), /*#__PURE__*/React.createElement("div", {
+          className: "col-span-3 grid grid-cols-2 gap-3"
+        }, /*#__PURE__*/React.createElement("div", null,
+          /*#__PURE__*/React.createElement("div", {
+            className: "flex items-baseline gap-1"
+          }, /*#__PURE__*/React.createElement("span", {
+            style: { color: worse ? T.clay : T.ink, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+            className: "text-lg leading-none font-medium"
+          }, v, "%")),
+          /*#__PURE__*/React.createElement("div", {
+            style: { background: T.paper }, className: "h-1.5 rounded-full overflow-hidden mt-1"
+          }, /*#__PURE__*/React.createElement("div", {
+            style: { width: `${Math.min(100, v)}%`, background: worse ? T.clay : T.indigo }, className: "h-full"
+          }))
+        ), /*#__PURE__*/React.createElement("div", null,
+          /*#__PURE__*/React.createElement("div", {
+            className: "flex items-baseline gap-1"
+          }, /*#__PURE__*/React.createElement("span", {
+            style: { color: T.muted, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+            className: "text-lg leading-none"
+          }, s, "%")),
+          /*#__PURE__*/React.createElement("div", {
+            style: { background: T.paper }, className: "h-1.5 rounded-full overflow-hidden mt-1"
+          }, /*#__PURE__*/React.createElement("div", {
+            style: { width: `${Math.min(100, s)}%`, background: T.faint }, className: "h-full"
+          }))
+        )));
+      };
+      const pctPerdidoLabel = isFinite(pctPerdidoMed) ? Math.round(pctPerdidoMed * 100) + "%" : "—";
+      return /*#__PURE__*/React.createElement(Card, {
+        className: "p-4 sm:p-5",
+        style: { borderTop: `3px solid ${T.clay}` }
+      },
+        /*#__PURE__*/React.createElement("div", {
+          className: "flex items-start gap-2 mb-3"
+        }, /*#__PURE__*/React.createElement(TrendingDown, { size: 17, style: { color: T.clay } }),
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("h3", {
+              style: { color: T.ink, fontFamily: sans },
+              className: "text-sm font-semibold leading-tight"
+            }, "Impacto de la discontinuación del programa Volver al Trabajo"),
+            /*#__PURE__*/React.createElement("p", {
+              style: { color: T.faint },
+              className: "text-xs mt-0.5"
+            }, "Hogares donde al menos una persona cobraba el programa · $70.000 por persona (4 o más = $280.000)"))
+        ),
+        /*#__PURE__*/React.createElement("div", {
+          className: "grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"
+        },
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "Hogares alcanzados", value: fmtInt(nVolver),
+            sub: `${pct(nVolver, nTotal)}% de la selección`,
+            color: T.indigo, icon: Users
+          }),
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "Ingreso mediano del hogar",
+            value: fmtARS(ingMedVolver),
+            sub: "mensual · ya sin Volver",
+            color: T.petrol, icon: Wallet
+          }),
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "Monto perdido mediano",
+            value: fmtARS(perdidoMed),
+            sub: "por hogar",
+            color: T.clay, icon: TrendingDown
+          }),
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "% del ingreso perdido (mediana)",
+            value: pctPerdidoLabel,
+            sub: "sobre el ingreso previo",
+            color: T.clay, icon: AlertTriangle
+          })
+        ),
+        /*#__PURE__*/React.createElement("div", { className: "grid md:grid-cols-2 gap-4" },
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("div", {
+              style: { color: T.ink, fontFamily: sans },
+              className: "text-xs font-semibold mb-2"
+            }, "Distribución del impacto"),
+            /*#__PURE__*/React.createElement("div", {
+              style: { color: T.faint },
+              className: "text-xs mb-2"
+            }, "Porcentaje del ingreso previo que representaba el programa"),
+            impactoTramos.some(t => t.value > 0)
+              ? /*#__PURE__*/React.createElement(RankBars, { items: impactoTramos, showPct: true, denom: nVolver })
+              : /*#__PURE__*/React.createElement(Empty, null)
+          ),
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("div", {
+              style: { color: T.ink, fontFamily: sans },
+              className: "text-xs font-semibold mb-2"
+            }, "Comparación con el resto de los hogares"),
+            /*#__PURE__*/React.createElement("div", {
+              className: "grid grid-cols-5 gap-2 items-baseline pb-2"
+            },
+              /*#__PURE__*/React.createElement("div", { className: "col-span-2" }),
+              /*#__PURE__*/React.createElement("div", {
+                className: "col-span-3 grid grid-cols-2 gap-3",
+                style: { color: T.faint, fontSize: 10 }
+              },
+                /*#__PURE__*/React.createElement("div", null,
+                  /*#__PURE__*/React.createElement("div", { style: { color: T.clay, fontWeight: 600 } }, "Con Volver"),
+                  /*#__PURE__*/React.createElement("div", null, "n = ", fmtInt(nVolver))
+                ),
+                /*#__PURE__*/React.createElement("div", null,
+                  /*#__PURE__*/React.createElement("div", { style: { color: T.muted, fontWeight: 600 } }, "Sin Volver"),
+                  /*#__PURE__*/React.createElement("div", null, "n = ", fmtInt(nSinVolver))
+                )
+              )
+            ),
+            /*#__PURE__*/React.createElement("div", {
+              className: "grid grid-cols-5 gap-2 items-center py-2",
+              style: { borderTop: `1px solid ${T.paper}` }
+            },
+              /*#__PURE__*/React.createElement("div", { className: "col-span-2 text-xs", style: { color: T.ink } }, "Ingreso mediano del hogar"),
+              /*#__PURE__*/React.createElement("div", { className: "col-span-3 grid grid-cols-2 gap-3" },
+                /*#__PURE__*/React.createElement("span", {
+                  style: { color: T.clay, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+                  className: "text-sm font-medium"
+                }, fmtARS(ingMedVolver)),
+                /*#__PURE__*/React.createElement("span", {
+                  style: { color: T.muted, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+                  className: "text-sm"
+                }, fmtARS(ingMedSinVolver))
+              )
+            ),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "Con al menos una deuda", v: cmp.endeudados.v, s: cmp.endeudados.s }),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "En mora (90+ días)", v: cmp.mora.v, s: cmp.mora.s }),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "Sobreendeudamiento", v: cmp.sobre.v, s: cmp.sobre.s }),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "Redujeron alimentación", v: cmp.alim.v, s: cmp.alim.s })
+          )
+        )
+      );
     }
 
     /* ─────────────────  TAB: ENDEUDAMIENTO  ───────────────── */
