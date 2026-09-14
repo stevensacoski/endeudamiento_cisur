@@ -1,290 +1,3109 @@
-"""
-SAMO — Snapshot semanal (Frente B, paso 1)
-==========================================
-Extrae FACTURAS, PRESTACIONES y NOMENCLADORES del SQL Server SAMO
-y las guarda en un archivo .duckdb con una columna _row_hash calculada
-sobre los "campos vivos" (los que pueden cambiar sin que sea un registro
-nuevo). El hash es lo que después usa 02_diff.py para detectar cambios.
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CISUR · Tablero de endeudamiento en barrios populares</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script crossorigin src="https://unpkg.com/recharts@2.15.0/umd/Recharts.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+  html, body, #root { height: 100%; }
+  body { margin: 0; background: #F5F6F4; font-family: 'Inter', system-ui, sans-serif; }
+  #boot { display:flex; min-height:100vh; align-items:center; justify-content:center; color:#5C6B6A; font-size:14px; }
+  .fatal { max-width:560px; margin:0 auto; padding:24px; }
+  .fatal h2 { color:#A83E2B; font-size:16px; margin:0 0 8px; }
+  .fatal p { color:#5C6B6A; font-size:14px; line-height:1.55; margin:6px 0; }
+</style>
+<script>
+  function showFatal(e){
+    var msg = (e && e.message) ? e.message : String(e);
+    var r = document.getElementById("root");
+    if (r) {
+      r.innerHTML = '<div class="fatal">' +
+        '<h2>No se pudo iniciar el tablero</h2>' +
+        '<p>' + msg + '</p>' +
+        '<p>Si es un problema de conexi\u00f3n, recarg\u00e1 la p\u00e1gina. Tambi\u00e9n pod\u00e9s abrir el archivo servido desde un hosting (no siempre funciona con doble clic directo).</p>' +
+        '</div>';
+    }
+    if (window.console) console.error("Tablero:", e);
+  }
+  window.addEventListener("error", function (ev) {
+    var r = document.getElementById("root");
+    if (r && r.querySelector("#boot")) showFatal(ev.error || ev.message || "Error al cargar recursos.");
+  });
+</script>
+</head>
+<body>
+<div id="root"><div id="boot">Cargando tablero…</div></div>
+<script>
+(function () {
+  try {
+    if (typeof React === "undefined" || typeof ReactDOM === "undefined") throw new Error("No se pudo cargar React (revis\u00e1 tu conexi\u00f3n a internet).");
+    if (typeof Recharts === "undefined") throw new Error("No se pudo cargar la librer\u00eda de gr\u00e1ficos (revis\u00e1 tu conexi\u00f3n).");
+    const {
+      useState,
+      useMemo,
+      useEffect,
+      useCallback
+    } = React;
+    const {
+      AreaChart,
+      Area,
+      PieChart,
+      Pie,
+      Cell,
+      ResponsiveContainer,
+      XAxis,
+      YAxis,
+      Tooltip,
+      CartesianGrid
+    } = Recharts;
+    const mkIcon = defs => (p = {}) => React.createElement("svg", {
+      width: p.size || 24,
+      height: p.size || 24,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: p.color || "currentColor",
+      strokeWidth: p.strokeWidth || 2,
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      className: p.className,
+      style: p.style
+    }, defs.map((d, i) => React.createElement(d[0], Object.assign({
+      key: i
+    }, d[1]))));
+    const RefreshCw = mkIcon([["path", {
+      d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"
+    }], ["path", {
+      d: "M21 3v5h-5"
+    }], ["path", {
+      d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"
+    }], ["path", {
+      d: "M3 21v-5h5"
+    }]]);
+    const Upload = mkIcon([["path", {
+      d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+    }], ["polyline", {
+      points: "17 8 12 3 7 8"
+    }], ["line", {
+      x1: 12,
+      y1: 3,
+      x2: 12,
+      y2: 15
+    }]]);
+    const MapPin = mkIcon([["path", {
+      d: "M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"
+    }], ["circle", {
+      cx: 12,
+      cy: 10,
+      r: 3
+    }]]);
+    const Users = mkIcon([["path", {
+      d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"
+    }], ["circle", {
+      cx: 9,
+      cy: 7,
+      r: 4
+    }], ["path", {
+      d: "M22 21v-2a4 4 0 0 0-3-3.87"
+    }], ["path", {
+      d: "M16 3.13a4 4 0 0 1 0 7.75"
+    }]]);
+    const Wallet = mkIcon([["path", {
+      d: "M21 12V7H5a2 2 0 0 1 0-4h14v4"
+    }], ["path", {
+      d: "M3 5v14a2 2 0 0 0 2 2h16v-5"
+    }], ["path", {
+      d: "M18 12a2 2 0 0 0 0 4h4v-4Z"
+    }]]);
+    const HandCoins = mkIcon([["circle", {
+      cx: 8,
+      cy: 8,
+      r: 6
+    }], ["path", {
+      d: "M18.09 10.37A6 6 0 1 1 10.34 18"
+    }], ["path", {
+      d: "M7 6h1v4"
+    }], ["path", {
+      d: "m16.71 13.88.7.71-2.82 2.82"
+    }]]);
+    const ShieldAlert = mkIcon([["path", {
+      d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1Z"
+    }], ["line", {
+      x1: 12,
+      y1: 8,
+      x2: 12,
+      y2: 12
+    }], ["line", {
+      x1: 12,
+      y1: 16,
+      x2: 12.01,
+      y2: 16
+    }]]);
+    const TrendingDown = mkIcon([["polyline", {
+      points: "22 17 13.5 8.5 8.5 13.5 2 7"
+    }], ["polyline", {
+      points: "16 17 22 17 22 11"
+    }]]);
+    const AlertTriangle = mkIcon([["path", {
+      d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"
+    }], ["line", {
+      x1: 12,
+      y1: 9,
+      x2: 12,
+      y2: 13
+    }], ["line", {
+      x1: 12,
+      y1: 17,
+      x2: 12.01,
+      y2: 17
+    }]]);
+    const Activity = mkIcon([["polyline", {
+      points: "22 12 18 12 15 21 9 3 6 12 2 12"
+    }]]);
+    const Building2 = mkIcon([["path", {
+      d: "M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18"
+    }], ["path", {
+      d: "M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"
+    }], ["path", {
+      d: "M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"
+    }], ["line", {
+      x1: 10,
+      y1: 6,
+      x2: 14,
+      y2: 6
+    }], ["line", {
+      x1: 10,
+      y1: 10,
+      x2: 14,
+      y2: 10
+    }], ["line", {
+      x1: 10,
+      y1: 14,
+      x2: 14,
+      y2: 14
+    }]]);
+    const Smartphone = mkIcon([["rect", {
+      x: 5,
+      y: 2,
+      width: 14,
+      height: 20,
+      rx: 2
+    }], ["line", {
+      x1: 12,
+      y1: 18,
+      x2: 12.01,
+      y2: 18
+    }]]);
+    const Dice5 = mkIcon([["rect", {
+      x: 3,
+      y: 3,
+      width: 18,
+      height: 18,
+      rx: 2
+    }], ["path", {
+      d: "M8 8h.01"
+    }], ["path", {
+      d: "M16 8h.01"
+    }], ["path", {
+      d: "M12 12h.01"
+    }], ["path", {
+      d: "M8 16h.01"
+    }], ["path", {
+      d: "M16 16h.01"
+    }]]);
+    const Recycle = mkIcon([["path", {
+      d: "m17 2 4 4-4 4"
+    }], ["path", {
+      d: "M3 11v-1a4 4 0 0 1 4-4h14"
+    }], ["path", {
+      d: "m7 22-4-4 4-4"
+    }], ["path", {
+      d: "M21 13v1a4 4 0 0 1-4 4H3"
+    }]]);
+    const Utensils = mkIcon([["path", {
+      d: "M3 2v7c0 1.1.9 2 2 2a2 2 0 0 0 2-2V2"
+    }], ["path", {
+      d: "M5 11v11"
+    }], ["path", {
+      d: "M19 2c-1.7 0-3 2-3 5s1 4 3 4"
+    }], ["path", {
+      d: "M19 11v11"
+    }]]);
+    const Layers = mkIcon([["path", {
+      d: "M12 2 2 7l10 5 10-5-10-5Z"
+    }], ["path", {
+      d: "m2 12 10 5 10-5"
+    }], ["path", {
+      d: "m2 17 10 5 10-5"
+    }]]);
+    const Info = mkIcon([["circle", {
+      cx: 12,
+      cy: 12,
+      r: 10
+    }], ["line", {
+      x1: 12,
+      y1: 16,
+      x2: 12,
+      y2: 12
+    }], ["line", {
+      x1: 12,
+      y1: 8,
+      x2: 12.01,
+      y2: 8
+    }]]);
+    const CheckCircle2 = mkIcon([["path", {
+      d: "M22 11.08V12a10 10 0 1 1-5.93-9.14"
+    }], ["polyline", {
+      points: "22 4 12 14.01 9 11.01"
+    }]]);
+    const Download = mkIcon([["path", {
+      d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+    }], ["polyline", {
+      points: "7 10 12 15 17 10"
+    }], ["line", {
+      x1: 12,
+      y1: 15,
+      x2: 12,
+      y2: 3
+    }]]);
+    const Search = mkIcon([["circle", {
+      cx: 11,
+      cy: 11,
+      r: 8
+    }], ["line", {
+      x1: 21,
+      y1: 21,
+      x2: 16.65,
+      y2: 16.65
+    }]]);
+    const XCircle = mkIcon([["circle", {
+      cx: 12,
+      cy: 12,
+      r: 10
+    }], ["line", {
+      x1: 15,
+      y1: 9,
+      x2: 9,
+      y2: 15
+    }], ["line", {
+      x1: 9,
+      y1: 9,
+      x2: 15,
+      y2: 15
+    }]]);
 
-Uso:
-    python 01_snapshot.py                              # snapshot con fecha de hoy, TODAS las tablas
-    python 01_snapshot.py --fecha 2026-09-14           # fecha explícita
-    python 01_snapshot.py --tablas facturas,nomencladores    # solo esas tablas
-    python 01_snapshot.py --test-conexion              # solo prueba la conexión, sin extraer nada
-    python 01_snapshot.py --chunk 100000               # cambia el tamaño de chunk (default 200000)
+    /* ==== app ==== */
+    const SHEET_ID = "1LFn_0xDGdFPXnYH3G7jxdJoIvebt_6JhX10ekhRADBQ";
+    const SHEET_NAME = "datos";
+    const SHEET_TRABAJOS = "trabajos";
+    const GVIZ_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(SHEET_NAME)}&headers=1`;
 
-Requisitos:
-    pip install duckdb pyodbc pandas
+    /* ─────────────────────────  THEME  ───────────────────────── */
+    const T = {
+      paper: "#F5F6F4",
+      surface: "#FFFFFF",
+      ink: "#1B2A2A",
+      muted: "#5C6B6A",
+      faint: "#8A968F",
+      line: "#E3E6E2",
+      petrol: "#0F5E5A",
+      petrolSoft: "#DCEAE8",
+      indigo: "#3A4E7A",
+      indigoSoft: "#E1E6F1",
+      amber: "#C58A2E",
+      amberSoft: "#F5E9D3",
+      clay: "#A83E2B",
+      claySoft: "#F1DBD5",
+      olive: "#6E8B4E"
+    };
+    const CAT = ["#0F5E5A", "#3A4E7A", "#C58A2E", "#6E8B4E", "#A83E2B", "#6B5B95", "#4C8C8C", "#B08968", "#9AA0A6"];
+    const serif = "'Iowan Old Style', 'Palatino Linotype', Georgia, 'Times New Roman', serif";
+    const sans = "'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
-Salida:
-    ./snapshots/snapshot_YYYY-MM-DD.duckdb
-"""
-from __future__ import annotations
+    /* ─────────────────────────  HELPERS  ───────────────────────── */
+    const norm = s => (s == null ? "" : String(s)).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const isSi = v => norm(v) === "si";
+    const fmtInt = n => isFinite(n) ? new Intl.NumberFormat("es-AR", {
+      maximumFractionDigits: 0
+    }).format(Math.round(n)) : "—";
+    const fmtARS = n => isFinite(n) ? "$" + new Intl.NumberFormat("es-AR", {
+      maximumFractionDigits: 0
+    }).format(Math.round(n)) : "—";
+    const pct = (part, total) => total > 0 ? Math.round(part / total * 100) : 0;
+    const mean = arr => {
+      const a = arr.filter(x => isFinite(x));
+      return a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
+    };
+    const fmtDec = (n, d = 1) => isFinite(n) ? new Intl.NumberFormat("es-AR", {
+      minimumFractionDigits: d,
+      maximumFractionDigits: d
+    }).format(n) : "—";
+    function num(v) {
+      if (v == null || v === "") return NaN;
+      if (typeof v === "number") return v;
+      let s = String(v).trim();
+      if (s === "" || /^#+$/.test(s)) return NaN;
+      if (/e[+\-]?\d+/i.test(s)) {
+        let t = s.replace(/[^0-9,.\-eE+]/g, "").replace(",", ".");
+        let n = parseFloat(t);
+        return isNaN(n) ? NaN : n;
+      }
+      let t = s.replace(/[^0-9,.\-]/g, "");
+      if (t.includes(",") && t.includes(".")) t = t.replace(/\./g, "").replace(",", ".");else if (t.includes(",")) {
+        const p = t.split(",");
+        t = p.length === 2 && p[1].length <= 2 ? p[0] + "." + p[1] : t.replace(/,/g, "");
+      }
+      const n = parseFloat(t);
+      return isNaN(n) ? NaN : n;
+    }
+    function median(arr) {
+      const a = arr.filter(x => isFinite(x)).sort((x, y) => x - y);
+      if (!a.length) return NaN;
+      const m = Math.floor(a.length / 2);
+      return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+    }
+    function parseGvizDate(v) {
+      if (!v) return null;
+      if (v instanceof Date) return v;
+      const m = String(v).match(/Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?\)/);
+      if (m) return new Date(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+      const d = new Date(v);
+      return isNaN(d) ? null : d;
+    }
 
-import argparse
-import datetime as dt
-import sys
-import time
-from pathlib import Path
+    /* ─────────────────  COLUMN RESOLUTION  ───────────────── */
+    function resolveColumns(headers) {
+      const H = headers.map(norm);
+      const find = (...frags) => H.findIndex(h => frags.every(f => h.includes(norm(f))));
+      const findAll = (...frags) => H.reduce((acc, h, i) => frags.every(f => h.includes(norm(f))) ? [...acc, i] : acc, []);
+      const findExact = label => H.findIndex(h => h === norm(label));
+      const optionMap = (stem, keys) => {
+        const out = {};
+        for (const k in keys) {
+          const idx = H.findIndex(h => h.includes(norm(stem)) && h.includes(norm(keys[k])));
+          if (idx >= 0) out[k] = idx;
+        }
+        return out;
+      };
+      const C = {
+        provincia: find("provincia"),
+        departamento: find("departamento"),
+        localidad: find("localidad"),
+        barrio: find("barrio"),
+        consent: find("tendrias unos minutos"),
+        genero: find("genero"),
+        edad: findExact("Edad") >= 0 ? findExact("Edad") : find("edad"),
+        generoAportante: find("principal aportante es"),
+        personasHogar: find("cuantas personas componen"),
+        personasMayores: find("cuantas personas son mayores"),
+        personasTrabajaron: find("cuantas tuvieron un trabajo"),
+        trabajosAportante: find("cuantos trabajos diferentes"),
+        horasAportante: find("cuantas horas trabaja"),
+        diasAportante: find("cuantos dias de la semana"),
+        volverTrabajo: find("cobraba el programa volver"),
+        ingTrabajo: find("total de los ingresos producto del trabajo"),
+        ingProgramas: find("por programas sociales"),
+        ingJubil: find("jubilaciones"),
+        ingOtros: find("otros rubros"),
+        tieneDeuda: find("usted o algun integrante", "deuda"),
+        antiguedad: find("cuanto hace que comenzo a endeudarse"),
+        propIngreso: find("proporcion del ingreso mensual"),
+        capacidadPago: find("capacidad del hogar para pagar"),
+        afectacionNivel: find("las deudas en tu vida diaria"),
+        refinancio: find("refinanciar alguna de las deudas"),
+        situacion: find("situacion economica"),
+        disminuyoComida: find("disminuir alguna comida"),
+        comedor: find("comedor o solicita viandas"),
+        preocupacion: find("principal preocupacion"),
+        deudaPasada: find("ya no considera que tiene"),
+        submitted: findExact("_submission_time"),
+        surveyor: findExact("_submitted_by"),
+        idx: findExact("_index"),
+        uuid: findExact("_uuid")
+      };
+      // creditor prevalence (Sí/No) — matched to the exact 12 columns (avoid the generic "¿tiene deuda?" text)
+      C.creditors = {
+        banco: find("prestamo personal"),
+        financiera: find("prestamo de financiera"),
+        fintech: find("app o fintech"),
+        tarjeta_banco: find("tarjeta de credito bancaria"),
+        tarjeta_comercio: find("tarjeta de comercio"),
+        cuotas_comercio: find("cuotas directamente"),
+        fiado: find("fiado o cuenta pendiente"),
+        prestamista: find("prestamista particular"),
+        familiar: find("prestamo de familiar"),
+        cooperativa: find("credito de cooperativa"),
+        servicios: find("facturas de servicios"),
+        alquiler: find("alquileres vencidos"),
+        otro: findExact("Otro")
+      };
+      C.nSi = findExact("n_si");
+      // "¿cómo estás pagando el resumen de la tarjeta?" se repite hasta 3 veces (una por bloque de deuda)
+      C.pagoTarjetaBlocks = findAll("resumen de la tarjeta");
+      // debt detail blocks — anchor + fixed offsets
+      C.debtBlocks = [find("deuda n"), find("2da deuda"), find("3ra deuda")].map(a => a < 0 ? null : {
+        tipo: a,
+        motivo: a + 1,
+        montoInicial: a + 2,
+        cuotas: a + 3,
+        valorCuota: a + 4,
+        debeHoy: a + 5,
+        alDia: a + 6,
+        modalidad: a + 7
+      });
+      // multi-selects (0/1 option columns)
+      C.gastos = optionMap("tres gastos", {
+        alimentacion: "/alimentacion",
+        alquiler: "/alquiler",
+        servicios: "/pago de servicios",
+        salud: "/salud",
+        educacion: "/educacion",
+        indumentaria: "/indumentaria",
+        electro_muebles: "/electrodomesticos",
+        transporte: "/transporte",
+        pago_deudas: "/pago de deudas",
+        mejoras_vivienda: "/mejoras"
+      });
+      C.montos = {
+        alimentacion: find("monto", "alimentacion"),
+        alquiler: find("monto", ": alquiler"),
+        servicios: find("monto", "pago de servicios"),
+        salud: find("monto", "salud"),
+        educacion: find("monto", "educacion"),
+        indumentaria: find("monto", "indumentaria"),
+        electro: find("monto", "electrodomesticos"),
+        transporte: find("monto", "transporte"),
+        deudas: find("monto", "pago de deudas"),
+        mejoras: find("monto", "mejoras en la vivienda")
+      };
+      C.atribucion = optionMap("atribuye principalmente", {
+        ingresos_insuf: "ingresos insuficientes",
+        aumento_precios: "aumento de precios",
+        perdida_empleo: "perdida de empleo",
+        alimentos: "compra de alimentos",
+        alquiler: "pago de alquiler",
+        servicios: "pago de servicios",
+        salud: "gastos de salud",
+        educacion: "gastos educativos",
+        vivienda: "reparacion, ampliacion",
+        inversion_laboral: "inversion en actividad",
+        pago_deuda: "cancelacion de otra deuda",
+        apuestas: "apuestas",
+        emergencia: "emergencia o gasto",
+        otro: "/otro"
+      });
+      C.redujo = optionMap("reducir gastos o dejar de pagar", {
+        no_redujo: "no tuvo que reducir",
+        alimentacion: "/alimentacion",
+        alquiler: "/alquiler",
+        servicios: "/servicios",
+        salud: "/salud",
+        educacion: "/educacion",
+        transporte: "/transporte",
+        indumentaria: "/indumentaria",
+        recreacion: "recreativas",
+        vivienda: "reparaciones o mejoras",
+        trabajo: "vinculados al trabajo",
+        pago_deudas: "pago de otras deudas",
+        otro: "/otro"
+      });
+      C.coercion = optionMap("gestores de cobranza", {
+        sin_presion: "no recibio presiones",
+        llamados: "llamados o mensajes",
+        contacto_terceros: "contacto a familiares",
+        visitas: "visitas al domicilio",
+        amenazas_verbales: "amenazas verbales",
+        amenazas_fisicas: "danos fisicos",
+        retencion_bienes: "retuvieron documentos",
+        exposicion_publica: "expusieron publicamente",
+        otro: "/otro",
+        prefiere_no: "prefiere no responder"
+      });
+      C.afectacion = optionMap("sentis que te afectan", {
+        sueno: "sueno",
+        animo: "animo o estado",
+        salud_fisica: "salud fisica",
+        relaciones: "relacion con la familia",
+        concentracion: "concentracion"
+      });
+      return C;
+    }
 
-import duckdb
-import pandas as pd
-import pyodbc
+    /* ─────────────────  BUILD RECORDS  ───────────────── */
+    const ARREARS_EXCLUDE = ["esta al dia", "no sabe", "no tiene", "no aplica"];
+    const isArrears = v => {
+      const n = norm(v);
+      return n !== "" && !ARREARS_EXCLUDE.some(x => n.includes(x));
+    };
+    // Mora = atraso de 90 días o más (tramos BCRA)
+    const MORA_KEYS = ["mas de 90", "mas de 180", "y hasta 2 ano", "y hasta 3 ano", "y hasta 4 ano", "mas de 4 ano"];
+    const isMora = v => {
+      const n = norm(v);
+      return MORA_KEYS.some(k => n.includes(k));
+    };
+    // Cualquier categoría BCRA reconocida (para localizar el "al día" aunque haya celdas combinadas)
+    const BCRA_BUCKETS = ["esta al dia", "hasta 31 dias", "mas de 31 y hasta 90", "mas de 90", "mas de 180", "y hasta 2 ano", "y hasta 3 ano", "y hasta 4 ano", "mas de 4 ano", "no sabe"];
+    const isBcraBucket = v => {
+      const n = norm(v);
+      return n !== "" && BCRA_BUCKETS.some(k => n.includes(k));
+    };
+    function buildRecords(headers, rows) {
+      const C = resolveColumns(headers);
+      const g = (r, i) => i != null && i >= 0 ? r[i] : undefined;
+      const optSet = (r, map) => {
+        const s = new Set();
+        for (const k in map) {
+          const v = g(r, map[k]);
+          if (v === 1 || v === "1" || isSi(v)) s.add(k);
+        }
+        return s;
+      };
+      return rows.map((r, ri) => {
+        const ingT = num(g(r, C.ingTrabajo)) || 0,
+          ingP = num(g(r, C.ingProgramas)) || 0,
+          ingJ = num(g(r, C.ingJubil)) || 0,
+          ingO = num(g(r, C.ingOtros)) || 0;
+        const ingTotal = ingT + ingP + ingJ + ingO;
+        const creditors = {};
+        for (const k in C.creditors) creditors[k] = isSi(g(r, C.creditors[k]));
+        const debts = [];
+        C.debtBlocks.forEach((b, bi) => {
+          if (!b) return;
+          const tipo = g(r, b.tipo);
+          if (tipo && norm(tipo).includes("no tengo otra")) return;
+          // al_día robusto: usar +6; si no es una categoría BCRA (por celdas combinadas), escanear el bloque
+          let alDia = g(r, b.alDia);
+          if (!isBcraBucket(alDia)) {
+            for (let k = b.tipo; k <= b.tipo + 10; k++) {
+              const v = g(r, k);
+              if (isBcraBucket(v)) {
+                alDia = v;
+                break;
+              }
+            }
+          }
+          const hasReal = !!tipo && norm(tipo) !== "";
+          if (!hasReal && !isBcraBucket(alDia)) return; // slot vacío ("no tengo otra deuda")
+          const pagoTarjetaIdx = C.pagoTarjetaBlocks[bi];
+          debts.push({
+            tipo: String(tipo || ""),
+            motivo: g(r, b.motivo),
+            montoInicial: num(g(r, b.montoInicial)),
+            cuotas: num(g(r, b.cuotas)),
+            valorCuota: num(g(r, b.valorCuota)),
+            debeHoy: num(g(r, b.debeHoy)),
+            alDia,
+            modalidad: g(r, b.modalidad),
+            pagoTarjeta: pagoTarjetaIdx != null && pagoTarjetaIdx >= 0 ? (g(r, pagoTarjetaIdx) || "").toString().trim() : ""
+          });
+        });
+        const arrearsCount = debts.filter(d => isArrears(d.alDia)).length;
+        const moraCount = debts.filter(d => isMora(d.alDia)).length;
+        const creditorsCount = Object.entries(creditors).filter(([k, v]) => k !== "otro" && v).length;
+        const declaraDeuda = isSi(g(r, C.tieneDeuda));
+        const atribucion = optSet(r, C.atribucion),
+          redujo = optSet(r, C.redujo),
+          coercion = optSet(r, C.coercion),
+          afect = optSet(r, C.afectacion),
+          gastosTop = optSet(r, C.gastos);
+        const propIngreso = g(r, C.propIngreso),
+          capacidad = g(r, C.capacidadPago);
+        const oiA = ["entre 25% y 50%", "mas del 50%"].includes(norm(propIngreso));
+        const oiB = ["con mucha dificultad", "no puede pagarlas"].includes(norm(capacidad));
+        const oiC = redujo.has("alimentacion");
+        const tieneDeuda = isSi(g(r, C.tieneDeuda)) || Object.values(creditors).some(Boolean) || debts.length > 0;
+        return {
+          idx: ri,
+          provincia: (g(r, C.provincia) || "").toString().trim() || "Sin dato",
+          departamento: (g(r, C.departamento) || "").toString().trim() || "Sin dato",
+          localidad: (g(r, C.localidad) || "").toString().trim() || "Sin dato",
+          barrio: (g(r, C.barrio) || "").toString().trim() || "Sin dato",
+          genero: (g(r, C.genero) || "").toString().trim() || "Sin dato",
+          generoAportante: (g(r, C.generoAportante) || "").toString().trim(),
+          edad: num(g(r, C.edad)),
+          personasHogar: num(g(r, C.personasHogar)),
+          personasMayores: num(g(r, C.personasMayores)),
+          personasTrabajaron: num(g(r, C.personasTrabajaron)),
+          trabajosAportante: num(g(r, C.trabajosAportante)),
+          horasAportante: num(g(r, C.horasAportante)),
+          diasAportante: num(g(r, C.diasAportante)),
+          volverTrabajo: (g(r, C.volverTrabajo) || "").toString().trim(),
+          nSi: num(g(r, C.nSi)),
+          ingT,
+          ingP,
+          ingJ,
+          ingO,
+          ingTotal,
+          montos: Object.fromEntries(Object.entries(C.montos).map(([k, i]) => [k, num(g(r, i))])),
+          gastosTop,
+          consent: isSi(g(r, C.consent)),
+          declinedConsent: norm(g(r, C.consent)) === "no",
+          tieneDeuda,
+          antiguedad: (g(r, C.antiguedad) || "").toString().trim(),
+          creditors,
+          creditorsCount,
+          declaraDeuda,
+          debts,
+          inArrears: arrearsCount > 0,
+          arrearsCount,
+          inMora: moraCount > 0,
+          moraCount,
+          propIngreso: (propIngreso || "").toString().trim(),
+          capacidad: (capacidad || "").toString().trim(),
+          atribucion,
+          redujo,
+          coercion,
+          afect,
+          afectacionNivel: (g(r, C.afectacionNivel) || "").toString().trim(),
+          refinancio: isSi(g(r, C.refinancio)),
+          situacion: (g(r, C.situacion) || "").toString().trim(),
+          disminuyoComida: isSi(g(r, C.disminuyoComida)),
+          comedor: isSi(g(r, C.comedor)),
+          preocupacion: (g(r, C.preocupacion) || "").toString().trim(),
+          overIndebted: oiA || oiB || oiC,
+          oiA,
+          oiB,
+          oiC,
+          submittedAt: parseGvizDate(g(r, C.submitted)),
+          surveyor: (g(r, C.surveyor) || "").toString().trim() || "Sin dato",
+          uuid: (g(r, C.uuid) || "").toString().trim(),
+          trabajos: []
+        };
+      });
+    }
 
-# ============================================================================
-# CONFIG — editar acá
-# ============================================================================
+    /* ─────────────────  TRABAJOS (repeat group)  ───────────────── */
+    function parseTrabajos(headers, rows) {
+      const H = headers.map(norm);
+      const findExact = label => H.findIndex(h => h === norm(label));
+      const find = (...frags) => H.findIndex(h => frags.every(f => h.includes(norm(f))));
+      const idxUuid = findExact("_submission__uuid");
+      // El nombre del header es literal: "El ${ord_trabajo} trabajo lo realizó de manera…"
+      const idxModalidad = find("trabajo lo realiz", "de manera");
+      const idxOrd = findExact("ord_trabajo");
+      if (idxUuid < 0 || idxModalidad < 0) return [];
+      const out = [];
+      rows.forEach(r => {
+        const uuid = (r[idxUuid] || "").toString().trim();
+        const modalidad = (r[idxModalidad] || "").toString().trim();
+        if (!uuid || !modalidad) return;
+        out.push({
+          uuid,
+          modalidad,
+          ord: idxOrd >= 0 ? (r[idxOrd] || "").toString().trim() : ""
+        });
+      });
+      return out;
+    }
+    function mergeTrabajos(records, trabajos) {
+      if (!trabajos || !trabajos.length) return records;
+      const byUuid = {};
+      trabajos.forEach(t => {
+        if (!byUuid[t.uuid]) byUuid[t.uuid] = [];
+        byUuid[t.uuid].push(t);
+      });
+      records.forEach(r => {
+        if (r.uuid && byUuid[r.uuid]) r.trabajos = byUuid[r.uuid];
+      });
+      return records;
+    }
 
-SQL_SERVER_HOST   = "10.158.0.228,10433"     # ojo: coma para puerto, no dos puntos
-SQL_SERVER_DB     = "MSAL_Analytics"
-SQL_SERVER_DRIVER = "ODBC Driver 18 for SQL Server"   # o "SQL Server" si no instalaste el 18
-SQL_USER          = "samo2qlink"
-SQL_PASSWORD      = "Y4nb&mtNCX"
+    /* ─────────────────  DATA SOURCES  ───────────────── */
+    function fromGviz(json) {
+      if (json && json.status === "error") {
+        const msg = json.errors && json.errors[0] && (json.errors[0].detailed_message || json.errors[0].message) || "error";
+        throw new Error(msg);
+      }
+      const table = json && json.table || {};
+      let cols = (table.cols || []).map(c => c && c.label && String(c.label).trim() ? c.label : c && c.id || "");
+      let rows = (table.rows || []).map(r => (r && r.c || []).map(cell => cell ? cell.v != null ? cell.v : "" : ""));
+      const labelled = cols.filter(x => x && String(x).trim()).length;
+      if (rows.length && labelled < cols.length / 2) {
+        cols = rows[0].map(String);
+        rows = rows.slice(1);
+      }
+      return {
+        headers: cols,
+        rows
+      };
+    }
+    function fetchSheetJsonp(sheetName) {
+      return new Promise((resolve, reject) => {
+        const cb = "gvizcb_" + Math.floor(Math.random() * 1e9);
+        const url = "https://docs.google.com/spreadsheets/d/" + SHEET_ID + "/gviz/tq?tqx=out:json;responseHandler:" + cb + "&sheet=" + encodeURIComponent(sheetName) + "&headers=1";
+        const s = document.createElement("script");
+        let done = false;
+        const cleanup = () => {
+          try {
+            delete window[cb];
+          } catch (e) {
+            window[cb] = undefined;
+          }
+          if (s.parentNode) s.parentNode.removeChild(s);
+        };
+        window[cb] = json => {
+          done = true;
+          try {
+            resolve(fromGviz(json));
+          } catch (e) {
+            reject(e);
+          } finally {
+            cleanup();
+          }
+        };
+        s.onerror = () => {
+          if (!done) {
+            reject(new Error("No se pudo leer la hoja \u201c" + sheetName + "\u201d (verificá que est\u00e9 compartida como \u201cCualquiera con el enlace: Lector\u201d)."));
+            cleanup();
+          }
+        };
+        s.src = url;
+        document.head.appendChild(s);
+        setTimeout(() => {
+          if (!done) {
+            reject(new Error("timeout"));
+            cleanup();
+          }
+        }, 15000);
+      });
+    }
+    async function fetchLive() {
+      // La hoja "datos" es obligatoria; "trabajos" es opcional (no rompe si falta).
+      const datos = await fetchSheetJsonp(SHEET_NAME);
+      let trabajos = { headers: [], rows: [] };
+      try {
+        trabajos = await fetchSheetJsonp(SHEET_TRABAJOS);
+      } catch (e) {
+        console.warn("No se pudo leer la hoja trabajos:", e && e.message);
+      }
+      return { datos, trabajos };
+    }
+    function sheetToAoa(ws) {
+      const aoa = XLSX.utils.sheet_to_json(ws, {
+        header: 1,
+        defval: "",
+        raw: true
+      });
+      return {
+        headers: (aoa[0] || []).map(String),
+        rows: aoa.slice(1).filter(r => r.some(c => c !== "" && c != null))
+      };
+    }
+    function tableFromWorkbook(ab) {
+      const wb = XLSX.read(ab, { type: "array" });
+      const nameDatos = wb.SheetNames.find(n => norm(n).includes("datos")) || wb.SheetNames[0];
+      const nameTrab = wb.SheetNames.find(n => norm(n).includes("trabajo"));
+      const datos = sheetToAoa(wb.Sheets[nameDatos]);
+      const trabajos = nameTrab ? sheetToAoa(wb.Sheets[nameTrab]) : { headers: [], rows: [] };
+      return { datos, trabajos };
+    }
 
-CONN_STR = (
-    f"DRIVER={{{SQL_SERVER_DRIVER}}};"
-    f"SERVER={SQL_SERVER_HOST};"
-    f"DATABASE={SQL_SERVER_DB};"
-    f"UID={SQL_USER};"
-    f"PWD={SQL_PASSWORD};"
-    f"TrustServerCertificate=yes;"
-    f"Encrypt=no;"
-)
+    /* ─────────────────  SYNTHETIC DEMO DATA  ───────────────── */
+    function makeDemo() {
+      const geo = [["Buenos Aires", "La Matanza", "Rafael Castillo", "Cuatro de Agosto (RENABAP 6286)"], ["Buenos Aires", "La Matanza", "Rafael Castillo", "Dieciséis de Febrero (RENABAP 6285)"], ["Buenos Aires", "General San Martín", "Loma Hermosa", "Costa Esperanza (RENABAP 625)"], ["Misiones", "Capital", "Posadas", "Chacra 158 (RENABAP 2001)"], ["Misiones", "Capital", "Garupá", "Guadalupe (RENABAP 2063)"], ["Santa Fe", "Rosario", "Rosario", "Nuevo Alberdi (RENABAP 3110)"]];
+      const pick = a => a[Math.floor(Math.random() * a.length)];
+      const bcra = ["Está al día / no tiene atraso", "Está al día / no tiene atraso", "Hasta 31 días de atraso", "Más de 31 y hasta 90 días", "Más de 90 y hasta 180 días", "Más de 180 días y hasta 1 año"];
+      const acreedores = ["Préstamo por app o fintech (Mercado Pago/Crédito, Ualá, Naranja X, Personal Pay u otras)", "Saldo o cuotas de tarjeta de crédito bancaria (Visa, Mastercard u otras)", "Préstamo de prestamista particular o del barrio", "Préstamo de familiar, amigo/a o conocido/a", "Fiado o cuenta pendiente en almacén, súper u otro comercio del barrio", "Préstamo de financiera (Credil, Crédito Argentino u otras)"];
+      const prop = ["Menos del 10%", "Entre 10% y 25%", "Entre 25% y 50%", "Más del 50%"];
+      const cap = ["Sin dificultad", "Con cierta dificultad", "Con mucha dificultad", "No puede pagarlas"];
+      const tarjetaPagoOpts = ["Pagando el total del resumen", "Pagando solo el pago mínimo", "No estoy pagando el resumen"];
+      const recs = [];
+      for (let i = 0; i < 52; i++) {
+        const [p, d, l, b] = pick(geo);
+        const nd = Math.random() < 0.72 ? 1 + Math.floor(Math.random() * 3) : 0;
+        const debts = Array.from({
+          length: nd
+        }, () => {
+          const ini = [200000, 300000, 500000, 800000, 1200000, 2000000][Math.floor(Math.random() * 6)];
+          const tipo = pick(acreedores);
+          return {
+            tipo,
+            montoInicial: ini,
+            cuotas: pick([6, 12, 18, 24]),
+            valorCuota: Math.round(ini / 10),
+            debeHoy: Math.round(ini * (0.4 + Math.random())),
+            alDia: pick(bcra),
+            modalidad: "Cuotas mensuales",
+            motivo: "Alimentación",
+            pagoTarjeta: norm(tipo).includes("tarjeta") ? pick(tarjetaPagoOpts) : ""
+          };
+        });
+        const cr = {};
+        ["banco", "financiera", "fintech", "tarjeta_banco", "tarjeta_comercio", "cuotas_comercio", "fiado", "prestamista", "familiar", "cooperativa", "servicios", "alquiler"].forEach(k => cr[k] = false);
+        debts.forEach(x => {
+          if (x.tipo.includes("fintech")) cr.fintech = true;else if (x.tipo.includes("prestamista")) cr.prestamista = true;else if (x.tipo.includes("familiar")) cr.familiar = true;else if (x.tipo.includes("Fiado")) cr.fiado = true;else if (x.tipo.includes("tarjeta de credito")) cr.tarjeta_banco = true;else if (x.tipo.includes("financiera")) cr.financiera = true;
+        });
+        if (Math.random() < 0.3) cr.servicios = true;
+        const arrears = debts.filter(x => isArrears(x.alDia)).length;
+        const propV = nd ? pick(prop) : "",
+          capV = nd ? pick(cap) : "";
+        const redujo = new Set();
+        if (Math.random() < 0.45) redujo.add("alimentacion");
+        if (Math.random() < 0.3) redujo.add("salud");
+        const coercion = new Set();
+        if (arrears) {
+          if (Math.random() < 0.6) coercion.add("llamados");
+          if (Math.random() < 0.3) coercion.add("contacto_terceros");
+          if (Math.random() < 0.15) coercion.add("amenazas_verbales");
+          if (Math.random() < 0.06) coercion.add("amenazas_fisicas");
+        }
+        const atrib = new Set(["ingresos_insuf", "aumento_precios"]);
+        if (Math.random() < 0.5) atrib.add("alimentos");
+        if (Math.random() < 0.12) atrib.add("apuestas");
+        if (Math.random() < 0.3) atrib.add("pago_deuda");
+        const afect = new Set();
+        if (arrears) {
+          afect.add("sueno");
+          afect.add("animo");
+        }
+        const ingTotal = [350000, 450000, 600000, 900000, 1200000, 1800000][Math.floor(Math.random() * 6)];
+        recs.push({
+          idx: i,
+          provincia: p,
+          departamento: d,
+          localidad: l,
+          barrio: b,
+          genero: pick(["Mujer", "Mujer", "Varón"]),
+          generoAportante: pick(["Mujer", "Varón"]),
+          edad: 22 + Math.floor(Math.random() * 45),
+          personasHogar: 2 + Math.floor(Math.random() * 5),
+          personasMayores: 1 + Math.floor(Math.random() * 3),
+          personasTrabajaron: Math.floor(Math.random() * 3),
+          trabajosAportante: 1 + Math.floor(Math.random() * 2),
+          horasAportante: 6 + Math.floor(Math.random() * 6),
+          diasAportante: 4 + Math.floor(Math.random() * 3),
+          volverTrabajo: pick(["Nadie", "Nadie", "Nadie", "1 persona", "2 personas"]),
+          ingT: ingTotal * 0.6,
+          ingP: ingTotal * 0.3,
+          ingJ: 0,
+          ingO: ingTotal * 0.1,
+          ingTotal,
+          montos: {
+            alimentacion: ingTotal * 0.4,
+            alquiler: ingTotal * 0.1,
+            servicios: ingTotal * 0.15,
+            salud: 0,
+            educacion: 0,
+            indumentaria: 0,
+            electro: 0,
+            transporte: ingTotal * 0.08,
+            deudas: ingTotal * 0.2,
+            mejoras: 0
+          },
+          gastosTop: new Set(["alimentacion", "servicios"]),
+          consent: true,
+          declinedConsent: false,
+          tieneDeuda: nd > 0,
+          antiguedad: pick(["Hace menos de 6 meses", "Entre 6 meses y 1 año", "Entre 1 y 2 años", "Entre 2 y 4 años"]),
+          creditors: cr,
+          creditorsCount: Object.values(cr).filter(Boolean).length,
+          nSi: Object.values(cr).filter(Boolean).length,
+          declaraDeuda: nd > 0,
+          debts,
+          inArrears: arrears > 0,
+          arrearsCount: arrears,
+          inMora: debts.filter(x => isMora(x.alDia)).length > 0,
+          moraCount: debts.filter(x => isMora(x.alDia)).length,
+          propIngreso: propV,
+          capacidad: capV,
+          atribucion: atrib,
+          redujo,
+          coercion,
+          afect,
+          afectacionNivel: arrears ? pick(["Bastante", "Mucho", "Muchísimo"]) : pick(["Nada", "Un poco"]),
+          refinancio: Math.random() < 0.25,
+          situacion: pick(["Empeoró", "Empeoró", "Se mantuvo igual", "Mejoró"]),
+          disminuyoComida: Math.random() < 0.4,
+          comedor: Math.random() < 0.25,
+          preocupacion: "Endeudamiento",
+          overIndebted: ["entre 25% y 50%", "mas del 50%"].includes(norm(propV)) || ["con mucha dificultad", "no puede pagarlas"].includes(norm(capV)) || redujo.has("alimentacion"),
+          oiA: ["entre 25% y 50%", "mas del 50%"].includes(norm(propV)),
+          oiB: ["con mucha dificultad", "no puede pagarlas"].includes(norm(capV)),
+          oiC: redujo.has("alimentacion"),
+          submittedAt: new Date(2026, 8, 1 + Math.floor(i / 7)),
+          surveyor: pick(["encuestador1", "encuestador2", "encuestador3", "encuestador4"]),
+          uuid: "demo-" + i,
+          trabajos: (function () {
+            const modOpts = ["Informal (en negro)", "Formal (en blanco)", "Independiente", "Trabajo a través de aplicaciones", "Trabajo en cooperativa"];
+            const nT = Math.random() < 0.55 ? 1 : Math.random() < 0.8 ? 2 : 3;
+            const ords = ["primer", "segundo", "tercer"];
+            return Array.from({ length: nT }, (_, k) => ({
+              uuid: "demo-" + i,
+              modalidad: pick(modOpts),
+              ord: ords[k]
+            }));
+          })()
+        });
+      }
+      return recs;
+    }
 
-# Nombres de tabla en tu DB
-TBL_FACTURAS      = "Modelos.FACTURAS"
-TBL_PRESTACIONES  = "Modelos.PRESTACIONES"
-TBL_NOMENCLADORES = "Modelos.NOMENCLADORES"
+    /* ─────────────────  SMALL UI PARTS  ───────────────── */
+    const Card = ({
+      children,
+      style,
+      className = ""
+    }) => /*#__PURE__*/React.createElement("div", {
+      className: "rounded-xl " + className,
+      style: {
+        background: T.surface,
+        border: `1px solid ${T.line}`,
+        boxShadow: "0 1px 2px rgba(27,42,42,0.04)",
+        ...style
+      }
+    }, children);
+    const Section = ({
+      title,
+      hint,
+      right,
+      children,
+      icon: Icon
+    }) => /*#__PURE__*/React.createElement(Card, {
+      className: "p-4 sm:p-5"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-start justify-between gap-3 mb-3"
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-2"
+    }, Icon && /*#__PURE__*/React.createElement(Icon, {
+      size: 17,
+      style: {
+        color: T.petrol
+      }
+    }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h3", {
+      style: {
+        color: T.ink,
+        fontFamily: sans
+      },
+      className: "text-sm font-semibold leading-tight"
+    }, title), hint && /*#__PURE__*/React.createElement("p", {
+      style: {
+        color: T.faint
+      },
+      className: "text-xs mt-0.5"
+    }, hint))), right), children);
+    function KPI({
+      label,
+      value,
+      sub,
+      color = T.petrol,
+      icon: Icon
+    }) {
+      return /*#__PURE__*/React.createElement(Card, {
+        className: "p-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center justify-between"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.muted
+        },
+        className: "text-xs font-medium"
+      }, label), Icon && /*#__PURE__*/React.createElement(Icon, {
+        size: 15,
+        style: {
+          color
+        }
+      })), /*#__PURE__*/React.createElement("div", {
+        style: {
+          color: T.ink,
+          fontFamily: serif
+        },
+        className: "text-3xl mt-1.5 leading-none"
+      }, value), sub && /*#__PURE__*/React.createElement("div", {
+        style: {
+          color: T.faint
+        },
+        className: "text-xs mt-1.5"
+      }, sub));
+    }
+    function RankBars({
+      items,
+      max,
+      fmt = fmtInt,
+      showPct,
+      denom
+    }) {
+      const mx = max || Math.max(1, ...items.map(i => i.value));
+      if (!items.length) return /*#__PURE__*/React.createElement(Empty, null);
+      return /*#__PURE__*/React.createElement("div", {
+        className: "space-y-2"
+      }, items.map((it, k) => /*#__PURE__*/React.createElement("div", {
+        key: k
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex items-baseline justify-between gap-2 mb-1"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.ink
+        },
+        className: "text-xs leading-tight"
+      }, it.label), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.muted,
+          fontVariantNumeric: "tabular-nums"
+        },
+        className: "text-xs font-medium whitespace-nowrap"
+      }, fmt(it.value), showPct && denom ? ` · ${pct(it.value, denom)}%` : "")), /*#__PURE__*/React.createElement("div", {
+        style: {
+          background: T.paper
+        },
+        className: "h-2 rounded-full overflow-hidden"
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          width: `${Math.max(2, it.value / mx * 100)}%`,
+          background: it.color || T.petrol
+        },
+        className: "h-full rounded-full"
+      })))));
+    }
+    const Empty = () => /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: T.faint
+      },
+      className: "text-xs italic py-6 text-center"
+    }, "Sin datos para esta selecci\xF3n.");
+    const Pill = ({
+      children,
+      color = T.petrol,
+      bg = T.petrolSoft
+    }) => /*#__PURE__*/React.createElement("span", {
+      style: {
+        color,
+        background: bg
+      },
+      className: "text-xs px-2 py-0.5 rounded-full font-medium"
+    }, children);
 
-# Filtros de universo
-FILTRO_FACTURAS      = "FechaEmision >= '2026-01-01'"
-FILTRO_PRESTACIONES  = "(Facturada = 'SI' AND FechaFacturacion >= '2026-01-01') OR Facturada = 'NO'"
-FILTRO_NOMENCLADORES = "1=1"
+    /* ─────────────────  APP  ───────────────── */
+    function App() {
+      const [records, setRecords] = useState(null);
+      const [meta, setMeta] = useState({
+        source: null,
+        updatedAt: null,
+        n: 0
+      });
+      const [status, setStatus] = useState("idle"); // idle | loading | error | ok
+      const [tab, setTab] = useState("avance");
+      const [flt, setFlt] = useState({
+        prov: "",
+        depto: "",
+        barrio: "",
+        genero: ""
+      });
+      const loadLive = useCallback(async () => {
+        setStatus("loading");
+        try {
+          const { datos, trabajos } = await fetchLive();
+          let recs = buildRecords(datos.headers, datos.rows).filter(r => !r.declinedConsent);
+          const tr = parseTrabajos(trabajos.headers || [], trabajos.rows || []);
+          recs = mergeTrabajos(recs, tr);
+          setRecords(recs);
+          setMeta({
+            source: "live",
+            updatedAt: new Date(),
+            n: recs.length
+          });
+          setStatus("ok");
+        } catch (e) {
+          setStatus("error");
+        }
+      }, []);
+      useEffect(() => {
+        loadLive();
+      }, [loadLive]);
+      const onFile = async file => {
+        if (!file) return;
+        setStatus("loading");
+        try {
+          const ab = await file.arrayBuffer();
+          const { datos, trabajos } = tableFromWorkbook(ab);
+          let recs = buildRecords(datos.headers, datos.rows).filter(r => !r.declinedConsent);
+          const tr = parseTrabajos(trabajos.headers || [], trabajos.rows || []);
+          recs = mergeTrabajos(recs, tr);
+          setRecords(recs);
+          setMeta({
+            source: "file:" + file.name,
+            updatedAt: new Date(),
+            n: recs.length
+          });
+          setStatus("ok");
+        } catch (e) {
+          setStatus("error");
+        }
+      };
+      const loadDemo = () => {
+        const recs = makeDemo();
+        setRecords(recs);
+        setMeta({
+          source: "demo",
+          updatedAt: new Date(),
+          n: recs.length
+        });
+        setStatus("ok");
+      };
 
-SNAPSHOTS_DIR = Path("./snapshots")
-DEFAULT_CHUNKSIZE = 200_000
+      // options for filters (cascading)
+      const opts = useMemo(() => {
+        if (!records) return {
+          prov: [],
+          depto: [],
+          barrio: [],
+          genero: []
+        };
+        const uniq = arr => [...new Set(arr)].filter(x => x && x !== "Sin dato").sort((a, b) => a.localeCompare(b, "es"));
+        const inProv = records.filter(r => !flt.prov || r.provincia === flt.prov);
+        const inDepto = inProv.filter(r => !flt.depto || r.departamento === flt.depto);
+        return {
+          prov: uniq(records.map(r => r.provincia)),
+          depto: uniq(inProv.map(r => r.departamento)),
+          barrio: uniq(inDepto.map(r => r.barrio)),
+          genero: uniq(records.map(r => r.genero))
+        };
+      }, [records, flt.prov, flt.depto]);
+      const data = useMemo(() => {
+        if (!records) return [];
+        return records.filter(r => (!flt.prov || r.provincia === flt.prov) && (!flt.depto || r.departamento === flt.depto) && (!flt.barrio || r.barrio === flt.barrio) && (!flt.genero || r.genero === flt.genero));
+      }, [records, flt]);
+      if (!records && status !== "ok") return /*#__PURE__*/React.createElement(Landing, {
+        status: status,
+        onRetry: loadLive,
+        onFile: onFile,
+        onDemo: loadDemo
+      });
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          background: T.paper,
+          fontFamily: sans,
+          minHeight: "100vh",
+          color: T.ink
+        }
+      }, /*#__PURE__*/React.createElement("style", null, `*{box-sizing:border-box} select{-webkit-appearance:none;appearance:none} ::-webkit-scrollbar{height:8px;width:8px} ::-webkit-scrollbar-thumb{background:${T.line};border-radius:8px}`), /*#__PURE__*/React.createElement(Header, {
+        meta: meta,
+        status: status,
+        onRefresh: loadLive,
+        onFile: onFile
+      }), /*#__PURE__*/React.createElement(Filters, {
+        flt: flt,
+        setFlt: setFlt,
+        opts: opts,
+        n: data.length,
+        total: records.length
+      }), /*#__PURE__*/React.createElement(Tabs, {
+        tab: tab,
+        setTab: setTab
+      }), /*#__PURE__*/React.createElement("div", {
+        className: "max-w-6xl mx-auto px-3 sm:px-5 pb-16"
+      }, data.length === 0 ? /*#__PURE__*/React.createElement(Card, {
+        className: "p-10 mt-4"
+      }, /*#__PURE__*/React.createElement(Empty, null)) : tab === "avance" ? /*#__PURE__*/React.createElement(Avance, {
+        data: data
+      }) : tab === "alerta" ? /*#__PURE__*/React.createElement(AlertaEncuesta, {
+        data: data
+      }) : tab === "hogares" ? /*#__PURE__*/React.createElement(Hogares, {
+        data: data
+      }) : tab === "trabajo" ? /*#__PURE__*/React.createElement(Trabajo, {
+        data: data
+      }) : tab === "deuda" ? /*#__PURE__*/React.createElement(Deuda, {
+        data: data
+      }) : /*#__PURE__*/React.createElement(Vulnerabilidad, {
+        data: data
+      })), /*#__PURE__*/React.createElement("footer", {
+        style: {
+          color: T.faint
+        },
+        className: "max-w-6xl mx-auto px-5 pb-10 text-xs"
+      }, "CISUR \xB7 Encuesta de endeudamiento en barrios populares \xB7 Los porcentajes se calculan sobre los hogares de la selecci\xF3n activa (n indicado en cada bloque)."));
+    }
 
-# ============================================================================
-# Campos "vivos" que entran al hash
-# ============================================================================
+    /* ─────────────────  LANDING / EMPTY  ───────────────── */
+    function Landing({
+      status,
+      onRetry,
+      onFile,
+      onDemo
+    }) {
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          background: T.paper,
+          fontFamily: sans,
+          minHeight: "100vh"
+        },
+        className: "flex items-center justify-center p-6"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "max-w-lg w-full"
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          color: T.petrol
+        },
+        className: "text-xs font-semibold tracking-wide"
+      }, "CISUR"), /*#__PURE__*/React.createElement("h1", {
+        style: {
+          color: T.ink,
+          fontFamily: serif
+        },
+        className: "text-2xl mt-1"
+      }, "Tablero de endeudamiento en barrios populares"), /*#__PURE__*/React.createElement("p", {
+        style: {
+          color: T.muted
+        },
+        className: "text-sm mt-2 leading-relaxed"
+      }, status === "loading" ? "Conectando con la planilla de campo…" : status === "error" ? "No pudimos leer la hoja en vivo. Para la lectura automática, la planilla tiene que estar compartida como “Cualquiera con el enlace: Lector”. Si preferís, cargá el último export de la hoja datos." : "Fuente: hoja datos que se actualiza a diario desde Kobo."), /*#__PURE__*/React.createElement("div", {
+        className: "mt-5 grid gap-2"
+      }, /*#__PURE__*/React.createElement("button", {
+        onClick: onRetry,
+        style: {
+          background: T.petrol,
+          color: "#fff"
+        },
+        className: "w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2"
+      }, /*#__PURE__*/React.createElement(RefreshCw, {
+        size: 15,
+        className: status === "loading" ? "animate-spin" : ""
+      }), " Conectar con el Sheet en vivo"), /*#__PURE__*/React.createElement("label", {
+        style: {
+          border: `1px solid ${T.line}`,
+          color: T.ink,
+          background: T.surface
+        },
+        className: "w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center gap-2 cursor-pointer"
+      }, /*#__PURE__*/React.createElement(Upload, {
+        size: 15
+      }), " Cargar export (.xlsx / .csv)", /*#__PURE__*/React.createElement("input", {
+        type: "file",
+        accept: ".xlsx,.xls,.csv",
+        className: "hidden",
+        onChange: e => onFile(e.target.files[0])
+      })), /*#__PURE__*/React.createElement("button", {
+        onClick: onDemo,
+        style: {
+          color: T.muted
+        },
+        className: "w-full py-2 text-xs"
+      }, "Ver con datos de demostraci\xF3n (sint\xE9ticos)"))));
+    }
 
-HASH_FACTURAS = [
-    "Estado", "TotalBruto", "TotalCreditos", "TotalNeto", "ValorPagado",
-    "Saldo", "FechaPresentacion", "FechaCancelacion", "UltimoReclamo",
-    "ComprobanteRelacionado", "TipoComprobante", "NroFactura",
-]
+    /* ─────────────────  HEADER / FILTERS / TABS  ───────────────── */
+    function Header({
+      meta,
+      status,
+      onRefresh,
+      onFile
+    }) {
+      const src = meta.source === "live" ? "En vivo desde el Sheet" : meta.source === "demo" ? "Datos de demostración" : meta.source?.startsWith("file") ? "Archivo cargado" : "—";
+      const ok = meta.source === "live";
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          background: T.surface,
+          borderBottom: `1px solid ${T.line}`
+        },
+        className: "sticky top-0 z-20"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "max-w-6xl mx-auto px-3 sm:px-5 py-3 flex items-center justify-between gap-3"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "min-w-0"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center gap-2"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.petrol
+        },
+        className: "text-xs font-semibold"
+      }, "CISUR"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          background: ok ? T.petrolSoft : T.amberSoft,
+          color: ok ? T.petrol : T.amber
+        },
+        className: "text-xs px-2 py-0.5 rounded-full font-medium flex items-center gap-1"
+      }, ok ? /*#__PURE__*/React.createElement(CheckCircle2, {
+        size: 11
+      }) : /*#__PURE__*/React.createElement(Info, {
+        size: 11
+      }), src)), /*#__PURE__*/React.createElement("h1", {
+        style: {
+          color: T.ink,
+          fontFamily: serif
+        },
+        className: "text-lg sm:text-xl leading-tight truncate"
+      }, "Endeudamiento en barrios populares")), /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center gap-2 shrink-0"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.faint
+        },
+        className: "hidden sm:block text-xs"
+      }, meta.updatedAt ? "Actualizado " + meta.updatedAt.toLocaleTimeString("es-AR", {
+        hour: "2-digit",
+        minute: "2-digit"
+      }) : ""), /*#__PURE__*/React.createElement("label", {
+        style: {
+          border: `1px solid ${T.line}`,
+          color: T.muted
+        },
+        className: "p-2 rounded-lg cursor-pointer",
+        title: "Cargar export"
+      }, /*#__PURE__*/React.createElement(Upload, {
+        size: 15
+      }), /*#__PURE__*/React.createElement("input", {
+        type: "file",
+        accept: ".xlsx,.xls,.csv",
+        className: "hidden",
+        onChange: e => onFile(e.target.files[0])
+      })), /*#__PURE__*/React.createElement("button", {
+        onClick: onRefresh,
+        style: {
+          background: T.petrol,
+          color: "#fff"
+        },
+        className: "p-2 rounded-lg",
+        title: "Actualizar desde el Sheet"
+      }, /*#__PURE__*/React.createElement(RefreshCw, {
+        size: 15,
+        className: status === "loading" ? "animate-spin" : ""
+      })))));
+    }
+    function Filters({
+      flt,
+      setFlt,
+      opts,
+      n,
+      total
+    }) {
+      const Sel = ({
+        k,
+        label,
+        list,
+        disabled
+      }) => /*#__PURE__*/React.createElement("div", {
+        className: "relative"
+      }, /*#__PURE__*/React.createElement("select", {
+        value: flt[k],
+        disabled: disabled,
+        onChange: e => setFlt(f => k === "prov" ? {
+          ...f,
+          prov: e.target.value,
+          depto: "",
+          barrio: ""
+        } : k === "depto" ? {
+          ...f,
+          depto: e.target.value,
+          barrio: ""
+        } : {
+          ...f,
+          [k]: e.target.value
+        }),
+        style: {
+          border: `1px solid ${T.line}`,
+          background: T.surface,
+          color: flt[k] ? T.ink : T.faint,
+          opacity: disabled ? 0.5 : 1
+        },
+        className: "text-xs rounded-lg pl-2.5 pr-6 py-1.5 w-full"
+      }, /*#__PURE__*/React.createElement("option", {
+        value: ""
+      }, label), list.map(o => /*#__PURE__*/React.createElement("option", {
+        key: o,
+        value: o
+      }, o))), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.faint
+        },
+        className: "absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-xs"
+      }, "\u25BE"));
+      const active = flt.prov || flt.depto || flt.barrio || flt.genero;
+      return /*#__PURE__*/React.createElement("div", {
+        className: "max-w-6xl mx-auto px-3 sm:px-5 pt-4"
+      }, /*#__PURE__*/React.createElement(Card, {
+        className: "p-3"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 sm:grid-cols-4 gap-2"
+      }, /*#__PURE__*/React.createElement(Sel, {
+        k: "prov",
+        label: "Provincia",
+        list: opts.prov
+      }), /*#__PURE__*/React.createElement(Sel, {
+        k: "depto",
+        label: "Departamento",
+        list: opts.depto,
+        disabled: !flt.prov
+      }), /*#__PURE__*/React.createElement(Sel, {
+        k: "barrio",
+        label: "Barrio",
+        list: opts.barrio,
+        disabled: !flt.depto
+      }), /*#__PURE__*/React.createElement(Sel, {
+        k: "genero",
+        label: "G\xE9nero",
+        list: opts.genero
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center justify-between mt-2.5"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.muted
+        },
+        className: "text-xs"
+      }, /*#__PURE__*/React.createElement("b", {
+        style: {
+          color: T.ink
+        }
+      }, fmtInt(n)), " hogares en la selecci\xF3n ", n !== total && /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.faint
+        }
+      }, "\xB7 de ", fmtInt(total), " totales")), active && /*#__PURE__*/React.createElement("button", {
+        onClick: () => setFlt({
+          prov: "",
+          depto: "",
+          barrio: "",
+          genero: ""
+        }),
+        style: {
+          color: T.petrol
+        },
+        className: "text-xs font-medium"
+      }, "Limpiar filtros"))));
+    }
+    function Tabs({
+      tab,
+      setTab
+    }) {
+      const items = [["avance", "Avance de campo", MapPin], ["alerta", "Alerta encuesta", AlertTriangle], ["hogares", "Perfil de hogares", Users], ["trabajo", "Trabajo", HandCoins], ["deuda", "Endeudamiento", Wallet], ["vuln", "Vulnerabilidad e impacto", ShieldAlert]];
+      return /*#__PURE__*/React.createElement("div", {
+        className: "max-w-6xl mx-auto px-3 sm:px-5 pt-3"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex gap-1 overflow-x-auto pb-1"
+      }, items.map(([k, label, Icon]) => {
+        const on = tab === k || k === "vuln" && tab === "vuln";
+        return /*#__PURE__*/React.createElement("button", {
+          key: k,
+          onClick: () => setTab(k === "vuln" ? "vuln" : k),
+          style: {
+            background: on ? T.ink : "transparent",
+            color: on ? "#fff" : T.muted,
+            border: `1px solid ${on ? T.ink : T.line}`
+          },
+          className: "text-xs font-medium px-3 py-2 rounded-lg whitespace-nowrap flex items-center gap-1.5"
+        }, /*#__PURE__*/React.createElement(Icon, {
+          size: 14
+        }), label);
+      })));
+    }
 
-HASH_PRESTACIONES = [
-    "Facturada", "Estado", "EstadoCarga", "NroFactura", "VentaCodigo",
-    "VentaItemCodigo", "ValorNomenclador", "FechaFacturacion",
-    "FechaAtencion", "FechaIngreso", "FechaEgreso", "CodPrestacion",
-    "NomencladorId", "PrestacionId", "AtencionCodigo",
-]
+    /* ─────────────────  TAB: AVANCE  ───────────────── */
+    function Avance({
+      data
+    }) {
+      const provincias = new Set(data.map(r => r.provincia));
+      const deptos = new Set(data.map(r => r.provincia + "|" + r.departamento));
+      const barrios = new Set(data.map(r => r.provincia + "|" + r.barrio));
+      const byProv = countBy(data, r => r.provincia);
+      const promProv = provincias.size ? data.length / provincias.size : 0;
+      const byDepto = Object.entries(data.reduce((m, r) => {
+        const k = r.provincia + "§" + r.departamento;
+        m[k] = (m[k] || 0) + 1;
+        return m;
+      }, {})).map(([k, n]) => {
+        const [prov, depto] = k.split("§");
+        return {
+          label: `${depto} (${prov})`,
+          value: n
+        };
+      }).sort((a, b) => b.value - a.value);
+      const timeSeries = useMemo(() => {
+        const withDate = data.filter(r => r.submittedAt);
+        if (!withDate.length) return null;
+        const byDay = {};
+        withDate.forEach(r => {
+          const k = r.submittedAt.toISOString().slice(0, 10);
+          byDay[k] = (byDay[k] || 0) + 1;
+        });
+        const days = Object.keys(byDay).sort();
+        let acc = 0;
+        return days.map(d => {
+          acc += byDay[d];
+          return {
+            dia: d.slice(5),
+            Encuestas: byDay[d],
+            Acumulado: acc
+          };
+        });
+      }, [data]);
+      // coverage table
+      const cover = useMemo(() => {
+        const m = {};
+        data.forEach(r => {
+          const k = [r.provincia, r.departamento, r.localidad, r.barrio].join("§");
+          m[k] = (m[k] || 0) + 1;
+        });
+        return Object.entries(m).map(([k, v]) => {
+          const [prov, depto, loc, barrio] = k.split("§");
+          return {
+            prov,
+            depto,
+            loc,
+            barrio,
+            n: v
+          };
+        }).sort((a, b) => b.n - a.n);
+      }, [data]);
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-5 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Encuestas",
+        value: fmtInt(data.length),
+        icon: Activity
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Provincias",
+        value: fmtInt(provincias.size),
+        color: T.indigo,
+        icon: MapPin
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Departamentos",
+        value: fmtInt(deptos.size),
+        color: T.indigo
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Barrios",
+        value: fmtInt(barrios.size),
+        color: T.olive,
+        icon: Building2
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Prom. encuestas / provincia",
+        value: fmtDec(promProv, 1),
+        color: T.amber,
+        icon: Activity
+      })), timeSeries && /*#__PURE__*/React.createElement(Section, {
+        title: "Ritmo de relevamiento",
+        hint: "Encuestas cargadas por d\xEDa y total acumulado",
+        icon: Activity
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          height: 220
+        }
+      }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+        width: "100%",
+        height: "100%"
+      }, /*#__PURE__*/React.createElement(AreaChart, {
+        data: timeSeries,
+        margin: {
+          top: 6,
+          right: 8,
+          left: -18,
+          bottom: 0
+        }
+      }, /*#__PURE__*/React.createElement("defs", null, /*#__PURE__*/React.createElement("linearGradient", {
+        id: "ga",
+        x1: "0",
+        y1: "0",
+        x2: "0",
+        y2: "1"
+      }, /*#__PURE__*/React.createElement("stop", {
+        offset: "0%",
+        stopColor: T.petrol,
+        stopOpacity: 0.25
+      }), /*#__PURE__*/React.createElement("stop", {
+        offset: "100%",
+        stopColor: T.petrol,
+        stopOpacity: 0
+      }))), /*#__PURE__*/React.createElement(CartesianGrid, {
+        stroke: T.line,
+        vertical: false
+      }), /*#__PURE__*/React.createElement(XAxis, {
+        dataKey: "dia",
+        tick: {
+          fontSize: 11,
+          fill: T.muted
+        },
+        stroke: T.line
+      }), /*#__PURE__*/React.createElement(YAxis, {
+        tick: {
+          fontSize: 11,
+          fill: T.muted
+        },
+        stroke: T.line,
+        allowDecimals: false
+      }), /*#__PURE__*/React.createElement(Tooltip, {
+        contentStyle: {
+          fontSize: 12,
+          borderRadius: 8,
+          border: `1px solid ${T.line}`
+        }
+      }), /*#__PURE__*/React.createElement(Area, {
+        type: "monotone",
+        dataKey: "Acumulado",
+        stroke: T.petrol,
+        strokeWidth: 2,
+        fill: "url(#ga)"
+      }), /*#__PURE__*/React.createElement(Area, {
+        type: "monotone",
+        dataKey: "Encuestas",
+        stroke: T.amber,
+        strokeWidth: 1.5,
+        fill: "none"
+      }))))), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Encuestas por provincia",
+        icon: MapPin
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: byProv.map((d, i) => ({
+          label: d.key,
+          value: d.n,
+          color: CAT[i % CAT.length]
+        })),
+        showPct: true,
+        denom: data.length
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Encuestas por departamento",
+        hint: "Cada departamento con su provincia entre par\xE9ntesis",
+        icon: Building2
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: byDepto.map((d, i) => ({
+          ...d,
+          color: CAT[i % CAT.length]
+        })),
+        showPct: true,
+        denom: data.length
+      }))), /*#__PURE__*/React.createElement(Section, {
+        title: "Cobertura territorial",
+        hint: `${cover.length} barrios relevados en la selección`,
+        icon: Layers
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "overflow-x-auto -mx-1"
+      }, /*#__PURE__*/React.createElement("table", {
+        className: "w-full text-xs",
+        style: {
+          borderCollapse: "collapse"
+        }
+      }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+        style: {
+          color: T.faint,
+          borderBottom: `1px solid ${T.line}`
+        },
+        className: "text-left"
+      }, /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Provincia"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Departamento"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Localidad"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Barrio"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium text-right"
+      }, "Encuestas"))), /*#__PURE__*/React.createElement("tbody", null, cover.map((r, i) => /*#__PURE__*/React.createElement("tr", {
+        key: i,
+        style: {
+          borderBottom: `1px solid ${T.paper}`,
+          color: T.ink
+        }
+      }, /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, r.prov), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.muted
+        }
+      }, r.depto), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.muted
+        }
+      }, r.loc), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, r.barrio), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1 text-right font-medium",
+        style: {
+          fontVariantNumeric: "tabular-nums"
+        }
+      }, r.n))))))));
+    }
 
-HASH_NOMENCLADORES = [
-    "Valor", "ConvenioDescripcion", "Descripcion",
-    "CodPrestacion", "Nomenclador",
-]
+    /* ─────────────────  TAB: ALERTA ENCUESTA  ───────────────── */
+    function AlertaEncuesta({
+      data
+    }) {
+      const n = data.length;
+      const checks = [{
+        key: "ing",
+        short: "Ingreso",
+        title: "Ingreso fuera de rango",
+        color: T.clay,
+        def: "Ingreso mensual del hogar menor a $50.000 o mayor a $10.000.000.",
+        test: r => isFinite(r.ingTotal) && (r.ingTotal < 50000 || r.ingTotal > 10000000)
+      }, {
+        key: "deuda_baja",
+        short: "Deuda baja",
+        title: "Deuda de monto muy bajo",
+        color: T.amber,
+        def: "Alguna deuda con monto menor a $50.000 (posible error de carga o de unidad).",
+        test: r => r.debts.some(d => d.montoInicial > 0 && d.montoInicial < 50000 || d.debeHoy > 0 && d.debeHoy < 50000)
+      }, {
+        key: "acre_det",
+        short: "Acreedores vs. detalle",
+        title: "Acreedores declarados sin detalle suficiente",
+        color: T.indigo,
+        def: "Declara 3 o más tipos de acreedor pero detalla menos de 3 deudas (respondió “no tengo otra deuda”).",
+        test: r => r.creditorsCount >= 3 && r.debts.length < 3
+      }, {
+        key: "dice_sin",
+        short: "Dice deuda, no detalla",
+        title: "Dice tener deuda sin detallar",
+        color: T.indigo,
+        def: "Respondió que el hogar tiene deudas, pero no marcó ningún acreedor ni cargó ninguna deuda.",
+        test: r => r.declaraDeuda && r.creditorsCount === 0 && r.debts.length === 0
+      }, {
+        key: "hogar",
+        short: "Composición",
+        title: "Composición del hogar inconsistente",
+        color: T.clay,
+        def: "Adultos mayores que el total de personas, o más personas trabajando que integrantes del hogar.",
+        test: r => isFinite(r.personasMayores) && isFinite(r.personasHogar) && r.personasMayores > r.personasHogar || isFinite(r.personasTrabajaron) && isFinite(r.personasHogar) && r.personasTrabajaron > r.personasHogar
+      }, {
+        key: "cuota",
+        short: "Cuota > deuda",
+        title: "Cuota mayor que el monto de la deuda",
+        color: T.amber,
+        def: "El valor de una cuota supera el monto total recibido de esa deuda.",
+        test: r => r.debts.some(d => d.valorCuota > 0 && d.montoInicial > 0 && d.valorCuota > d.montoInicial)
+      }, {
+        key: "edad",
+        short: "Edad",
+        title: "Edad fuera de rango",
+        color: T.clay,
+        def: "Edad de la persona encuestada menor a 18 o mayor a 100 años.",
+        test: r => isFinite(r.edad) && (r.edad < 18 || r.edad > 100)
+      }];
+      const flagged = data.map(r => ({
+        r,
+        hits: checks.filter(c => c.test(r))
+      })).filter(x => x.hits.length);
+      const withAlert = flagged.length;
+      const rows = flagged.slice().sort((a, b) => b.hits.length - a.hits.length || String(a.r.provincia).localeCompare(String(b.r.provincia), "es"));
+      const perCheck = checks.map(c => ({
+        ...c,
+        count: data.filter(r => c.test(r)).length
+      }));
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-4 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Encuestas con alguna alerta",
+        value: pct(withAlert, n) + "%",
+        sub: `${fmtInt(withAlert)} de ${fmtInt(n)} encuestas`,
+        color: T.clay,
+        icon: AlertTriangle
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Encuestas sin alertas",
+        value: pct(n - withAlert, n) + "%",
+        sub: `${fmtInt(n - withAlert)} encuestas`,
+        color: T.petrol,
+        icon: CheckCircle2
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Controles aplicados",
+        value: fmtInt(checks.length),
+        sub: "chequeos de consistencia",
+        color: T.indigo,
+        icon: Layers
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Se\xF1ales de sospecha",
+        hint: "Chequeos de consistencia para revisar con el equipo \xB7 no son hallazgos sustantivos",
+        icon: AlertTriangle
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid sm:grid-cols-2 lg:grid-cols-3 gap-3"
+      }, perCheck.map(c => /*#__PURE__*/React.createElement("div", {
+        key: c.key,
+        style: {
+          background: T.paper,
+          borderLeft: `3px solid ${c.color}`
+        },
+        className: "rounded-lg p-3"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex items-baseline justify-between gap-2"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.ink
+        },
+        className: "text-sm font-semibold"
+      }, c.title), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: c.color,
+          fontFamily: serif
+        },
+        className: "text-xl leading-none whitespace-nowrap"
+      }, fmtInt(c.count))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          color: T.faint
+        },
+        className: "text-xs mt-0.5"
+      }, pct(c.count, n), "% de las encuestas"), /*#__PURE__*/React.createElement("p", {
+        style: {
+          color: T.muted
+        },
+        className: "text-xs mt-1.5 leading-snug"
+      }, c.def))))), /*#__PURE__*/React.createElement(Section, {
+        title: "Encuestas a revisar",
+        hint: `${fmtInt(withAlert)} encuestas con al menos una alerta · para remarcar a cada encuestador/a`,
+        icon: ShieldAlert
+      }, rows.length === 0 ? /*#__PURE__*/React.createElement(Empty, null) : /*#__PURE__*/React.createElement("div", {
+        className: "overflow-x-auto -mx-1"
+      }, /*#__PURE__*/React.createElement("table", {
+        className: "w-full text-xs",
+        style: {
+          borderCollapse: "collapse"
+        }
+      }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+        style: {
+          color: T.faint,
+          borderBottom: `1px solid ${T.line}`
+        },
+        className: "text-left"
+      }, /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "#"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Provincia"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Departamento"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Barrio"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Encuestador/a"), /*#__PURE__*/React.createElement("th", {
+        className: "py-2 px-1 font-medium"
+      }, "Alertas"))), /*#__PURE__*/React.createElement("tbody", null, rows.map((x, i) => /*#__PURE__*/React.createElement("tr", {
+        key: i,
+        style: {
+          borderBottom: `1px solid ${T.paper}`,
+          color: T.ink
+        }
+      }, /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.faint,
+          fontVariantNumeric: "tabular-nums"
+        }
+      }, x.r.idx + 1), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, x.r.provincia), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.muted
+        }
+      }, x.r.departamento), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, x.r.barrio), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1",
+        style: {
+          color: T.muted
+        }
+      }, x.r.surveyor), /*#__PURE__*/React.createElement("td", {
+        className: "py-2 px-1"
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "flex flex-wrap gap-1"
+      }, x.hits.map(h => /*#__PURE__*/React.createElement("span", {
+        key: h.key,
+        style: {
+          color: h.color,
+          background: T.paper,
+          border: `1px solid ${h.color}`
+        },
+        className: "text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap"
+      }, h.short)))))))))));
+    }
 
-# ============================================================================
-# Queries
-# ============================================================================
+    /* ─────────────────  TAB: HOGARES  ───────────────── */
+    function Hogares({
+      data
+    }) {
+      const ingMed = median(data.map(r => r.ingTotal).filter(x => x > 0));
+      const perCap = median(data.map(r => r.personasHogar > 0 ? r.ingTotal / r.personasHogar : NaN));
+      const hogarMed = median(data.map(r => r.personasHogar));
+      const comida = data.filter(r => r.disminuyoComida).length;
+      const ingComp = [{
+        name: "Trabajo / changas",
+        v: data.reduce((s, r) => s + (r.ingT || 0), 0),
+        c: T.petrol
+      }, {
+        name: "Programas sociales",
+        v: data.reduce((s, r) => s + (r.ingP || 0), 0),
+        c: T.indigo
+      }, {
+        name: "Jubilaciones / pensiones",
+        v: data.reduce((s, r) => s + (r.ingJ || 0), 0),
+        c: T.amber
+      }, {
+        name: "Otros",
+        v: data.reduce((s, r) => s + (r.ingO || 0), 0),
+        c: T.olive
+      }].filter(x => x.v > 0);
+      const gastosLbl = {
+        alimentacion: "Alimentación",
+        alquiler: "Alquiler",
+        servicios: "Servicios",
+        salud: "Salud",
+        educacion: "Educación",
+        indumentaria: "Indumentaria",
+        electro_muebles: "Electro / muebles",
+        transporte: "Transporte",
+        pago_deudas: "Pago de deudas",
+        mejoras_vivienda: "Mejoras vivienda"
+      };
+      const gastosTop = Object.keys(gastosLbl).map(k => ({
+        label: gastosLbl[k],
+        value: data.filter(r => r.gastosTop.has(k)).length
+      })).filter(x => x.value).sort((a, b) => b.value - a.value);
+      const edades = histogram(data.map(r => r.edad).filter(isFinite), [18, 30, 40, 50, 60, 120], ["18–29", "30–39", "40–49", "50–59", "60+"]);
+      const generos = countBy(data, r => r.genero);
+      const menoresProm = mean(data.map(r => isFinite(r.personasHogar) && isFinite(r.personasMayores) ? Math.max(r.personasHogar - r.personasMayores, 0) : NaN));
+      const mono = data.filter(r => r.personasMayores === 1 && r.personasHogar > 1).length;
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-3 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Ingreso del hogar (mediana)",
+        value: fmtARS(ingMed),
+        sub: "mensual",
+        icon: Wallet
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Ingreso por persona (mediana)",
+        value: fmtARS(perCap),
+        color: T.indigo
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Tama\xF1o del hogar (mediana)",
+        value: fmtInt(hogarMed),
+        sub: "personas",
+        color: T.olive,
+        icon: Users
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Menores por hogar (promedio)",
+        value: fmtDec(menoresProm, 1),
+        sub: "personas \u2212 adultos",
+        color: T.amber,
+        icon: Users
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Hogares monomarentales",
+        value: pct(mono, data.length) + "%",
+        sub: `${fmtInt(mono)} de ${fmtInt(data.length)} · 1 adulto + convivientes`,
+        color: T.indigo,
+        icon: Users
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Redujeron comidas",
+        value: pct(comida, data.length) + "%",
+        sub: `${comida} de ${data.length} hogares`,
+        color: T.clay,
+        icon: Utensils
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Composici\xF3n del ingreso",
+        hint: "Sobre el total agregado de la selecci\xF3n",
+        icon: Wallet
+      }, /*#__PURE__*/React.createElement(Donut, {
+        data: ingComp,
+        fmt: fmtARS
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "G\xE9nero de la persona encuestada",
+        icon: Users
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: generos.map((d, i) => ({
+          label: d.key,
+          value: d.n,
+          color: CAT[i % CAT.length]
+        })),
+        showPct: true,
+        denom: data.length
+      }))), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Edad de la persona encuestada",
+        icon: Users
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: edades.map(d => ({
+          label: d.label,
+          value: d.n,
+          color: T.indigo
+        })),
+        showPct: true,
+        denom: data.length
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Principales rubros de gasto",
+        hint: "Hogares que lo se\xF1alan entre sus 3 gastos mayores",
+        icon: Layers
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: gastosTop,
+        showPct: true,
+        denom: data.length
+      }))));
+    }
 
-Q_FACTURAS = f"""
-SELECT Id, Region, CodMunicipio, Municipio, CodEstable, Establecimiento,
-       Dependencia, CodFinanciador, Financiador, NroFactura,
-       TotalBruto, TotalCreditos, TotalNeto, ValorPagado, Saldo,
-       UltimoReclamo, Estado, FechaEmision, FechaPresentacion,
-       FechaCancelacion, FechaCreacion, UsuarioCreacion,
-       FechaUltimaActualizacion, VentaCodigo, TipoComprobante,
-       ComprobanteRelacionado
-  FROM {TBL_FACTURAS}
- WHERE {FILTRO_FACTURAS}
-"""
+    /* ─────────────────  TAB: TRABAJO  ───────────────── */
+    function Trabajo({
+      data
+    }) {
+      const adultosTot = data.reduce((s, r) => s + (isFinite(r.personasMayores) ? r.personasMayores : 0), 0);
+      const trabajanTot = data.reduce((s, r) => s + (isFinite(r.personasTrabajaron) ? r.personasTrabajaron : 0), 0);
+      const tasaOcup = adultosTot > 0 ? Math.round(trabajanTot / adultosTot * 100) : 0;
+      const trabajosProm = mean(data.map(r => r.trabajosAportante));
+      const horasProm = mean(data.map(r => r.horasAportante));
+      const diasProm = mean(data.map(r => r.diasAportante));
+      const conDato = data.filter(r => r.volverTrabajo);
+      const volverOrder = ["Nadie", "1 persona", "2 personas", "3 personas", "4 o más"];
+      const volver = ordered(countBy(conDato, r => r.volverTrabajo), volverOrder);
+      // Modalidad de trabajos (repeat group "trabajos")
+      const trabajosFlat = [];
+      const hogaresConTrabajos = new Set();
+      data.forEach(r => {
+        if (r.trabajos && r.trabajos.length) {
+          r.trabajos.forEach(t => {
+            if (t.modalidad) trabajosFlat.push(t);
+          });
+          hogaresConTrabajos.add(r.uuid || r.idx);
+        }
+      });
+      const modalidadColor = label => {
+        const nl = norm(label);
+        if (nl.includes("informal") || nl.includes("negro")) return T.clay;
+        if (nl.includes("formal") || nl.includes("blanco")) return T.petrol;
+        if (nl.includes("independiente")) return T.indigo;
+        if (nl.includes("aplicacion") || nl.includes("plataforma")) return T.amber;
+        if (nl.includes("cooperativa")) return T.olive;
+        if (nl.includes("apuesta") || nl.includes("inversion") || nl.includes("virtual")) return T.clay;
+        if (nl.includes("programa")) return "#6B5B95";
+        if (nl.includes("familiar")) return T.faint;
+        return T.faint;
+      };
+      const modalidadOrder = ["Informal (en negro)", "Formal (en blanco)", "Independiente", "Trabajo a través de aplicaciones", "Trabajo en cooperativa", "Trabajo de programas sociales", "Trabajo familiar", "Trabajo virtual (apuestas, inversiones, etc.)"];
+      const modalidadCounts = countBy(trabajosFlat, t => t.modalidad);
+      const modalidad = ordered(modalidadCounts, modalidadOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: modalidadColor(d.key)
+      }));
+      // Volver al Trabajo — impacto de la discontinuación
+      // 1 persona = $70.000; 4 o más = 4 personas ($280.000).
+      const volverPersonas = label => {
+        const nl = norm(label);
+        if (nl.includes("1 persona")) return 1;
+        if (nl.includes("2 persona")) return 2;
+        if (nl.includes("3 persona")) return 3;
+        if (nl.includes("4 o mas") || nl.includes("4 o más") || nl.includes("4 personas") || nl.includes("mas de 4")) return 4;
+        return 0;
+      };
+      const VOLVER_MONTO = 70000;
+      const conVolver = data.filter(r => {
+        const p = volverPersonas(r.volverTrabajo);
+        return p > 0;
+      }).map(r => {
+        const p = volverPersonas(r.volverTrabajo);
+        const perdido = p * VOLVER_MONTO;
+        // El ingreso actual ya NO incluye Volver (el programa se discontinuó).
+        // "Ingreso previo" reconstruido = ingreso actual + monto perdido.
+        const ingresoPrevio = (r.ingTotal || 0) + perdido;
+        const pctPerdido = ingresoPrevio > 0 ? perdido / ingresoPrevio : NaN;
+        return { r, personas: p, perdido, ingresoPrevio, pctPerdido };
+      });
+      const sinVolver = data.filter(r => volverPersonas(r.volverTrabajo) === 0);
+      const nVolver = conVolver.length;
+      // Distribución del impacto (% del ingreso previo perdido)
+      const impactoTramos = [
+        { label: "Menos del 10%", min: 0, max: 0.10, color: T.olive },
+        { label: "Entre 10% y 25%", min: 0.10, max: 0.25, color: T.amber },
+        { label: "Entre 25% y 50%", min: 0.25, max: 0.50, color: T.clay },
+        { label: "Más del 50%", min: 0.50, max: Infinity, color: "#7A2818" }
+      ].map(t => ({
+        label: t.label,
+        value: conVolver.filter(x => isFinite(x.pctPerdido) && x.pctPerdido >= t.min && x.pctPerdido < t.max).length,
+        color: t.color
+      }));
+      // Medianas para KPIs y comparación
+      const ingMedVolver = median(conVolver.map(x => x.r.ingTotal).filter(v => v > 0));
+      const ingMedSinVolver = median(sinVolver.map(r => r.ingTotal).filter(v => v > 0));
+      const perdidoMed = median(conVolver.map(x => x.perdido));
+      const pctPerdidoMed = median(conVolver.map(x => x.pctPerdido).filter(isFinite));
+      // Indicadores comparados
+      const pctIn = (arr, pred) => arr.length ? Math.round(arr.filter(pred).length / arr.length * 100) : 0;
+      const cmpEndeudados = { v: pctIn(conVolver.map(x => x.r), r => r.tieneDeuda), s: pctIn(sinVolver, r => r.tieneDeuda) };
+      const cmpMora = { v: pctIn(conVolver.map(x => x.r), r => r.inMora), s: pctIn(sinVolver, r => r.inMora) };
+      const cmpAlim = { v: pctIn(conVolver.map(x => x.r), r => r.disminuyoComida), s: pctIn(sinVolver, r => r.disminuyoComida) };
+      const cmpSobre = { v: pctIn(conVolver.map(x => x.r), r => r.overIndebted), s: pctIn(sinVolver, r => r.overIndebted) };
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-4 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Adultos que trabajan",
+        value: fmtInt(trabajanTot),
+        sub: `${tasaOcup}% de ${fmtInt(adultosTot)} adultos`,
+        color: T.petrol,
+        icon: HandCoins
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Trabajos por aportante (prom.)",
+        value: fmtDec(trabajosProm, 1),
+        sub: "principal aportante",
+        color: T.indigo,
+        icon: Layers
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Horas por d\xEDa (prom.)",
+        value: fmtDec(horasProm, 1),
+        sub: "aportante principal",
+        color: T.amber,
+        icon: Activity
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "D\xEDas por semana (prom.)",
+        value: fmtDec(diasProm, 1),
+        sub: "aportante principal",
+        color: T.olive,
+        icon: Activity
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Tasa de ocupaci\xF3n de personas adultas",
+        hint: "Integrantes que trabajaron la \xFAltima semana sobre el total de adultos de la selecci\xF3n",
+        icon: HandCoins
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: [{
+          label: "Trabajaron la última semana",
+          value: trabajanTot,
+          color: T.petrol
+        }, {
+          label: "No trabajaron",
+          value: Math.max(adultosTot - trabajanTot, 0),
+          color: T.line
+        }],
+        showPct: true,
+        denom: adultosTot
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Modalidad de los trabajos declarados",
+        hint: `Sobre ${fmtInt(trabajosFlat.length)} trabajos de ${fmtInt(hogaresConTrabajos.size)} hogares con detalle (hasta 3 por hogar)`,
+        icon: Layers
+      }, trabajosFlat.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: modalidad,
+        showPct: true,
+        denom: trabajosFlat.length
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "Integrantes que cobraban el programa Volver al Trabajo",
+        hint: "Agosto 2026 (ex Salario Social Complementario)",
+        icon: HandCoins
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: volver.map(d => ({
+          label: d.key,
+          value: d.n,
+          color: d.key === "Nadie" ? T.faint : T.indigo
+        })),
+        showPct: true,
+        denom: conDato.length
+      })), nVolver > 0 && /*#__PURE__*/React.createElement(VolverImpacto, {
+        nVolver,
+        nTotal: data.length,
+        ingMedVolver,
+        ingMedSinVolver,
+        perdidoMed,
+        pctPerdidoMed,
+        impactoTramos,
+        cmp: { endeudados: cmpEndeudados, mora: cmpMora, alim: cmpAlim, sobre: cmpSobre },
+        nSinVolver: sinVolver.length
+      }));
+    }
 
-Q_PRESTACIONES = f"""
-SELECT Id, Region, CodMunicipio, Municipio, CodEstable, Establecimiento,
-       Dependencia, CodFinanciador, Financiador, Facturada, NroFactura,
-       Apellido, Nombre, TipoDoc, NroDoc, Ambito, CodServicio, Servicio,
-       CodEspecialidad, Especialidad, Matricula, TipoDniProfesional,
-       NroDniProfesional, NombreProfesional, ApellidoProfesional,
-       Origen, EstadoCarga, Estado, Usuario, FechaCarga, FechaFacturacion,
-       FechaAtencion, FechaIngreso, FechaEgreso, CodPrestacion, Prestacion,
-       Cie10, DescCie10, ValorNomenclador, FechaCreacion, UsuarioCreacion,
-       FechaUltimaActualizacion, AtencionCodigo, VentaCodigo, VentaItemCodigo,
-       CodEstableAtencion, NomencladorId, PrestacionId
-  FROM {TBL_PRESTACIONES}
- WHERE {FILTRO_PRESTACIONES}
-"""
-
-Q_NOMENCLADORES = f"""
-SELECT Id, NomencladorId, PrestacionId, CodPrestacion, Descripcion,
-       Valor, Nomenclador, ConvenioDescripcion
-  FROM {TBL_NOMENCLADORES}
- WHERE {FILTRO_NOMENCLADORES}
-"""
-
-TABLAS_CONFIG = {
-    "facturas":      {"query": Q_FACTURAS,      "hash_cols": HASH_FACTURAS},
-    "prestaciones":  {"query": Q_PRESTACIONES,  "hash_cols": HASH_PRESTACIONES},
-    "nomencladores": {"query": Q_NOMENCLADORES, "hash_cols": HASH_NOMENCLADORES},
-}
-
-# ============================================================================
-# Lógica
-# ============================================================================
-
-def build_hash_expr(cols: list[str]) -> str:
-    parts = ", ".join(
-        f"COALESCE(CAST({c} AS VARCHAR), '__NULL__')" for c in cols
-    )
-    return f"md5(concat_ws('|', {parts}))"
-
-
-def test_conexion() -> None:
-    print(f"→ probando conexión con {SQL_SERVER_HOST} / {SQL_SERVER_DB}...")
-    print(f"  driver: {SQL_SERVER_DRIVER}")
-    try:
-        con = pyodbc.connect(CONN_STR, timeout=10)
-        cur = con.cursor()
-        cur.execute("SELECT @@VERSION AS v, SUSER_NAME() AS u, DB_NAME() AS d")
-        row = cur.fetchone()
-        print(f"  ✓ conectado como: {row.u}")
-        print(f"  ✓ base actual:    {row.d}")
-        print(f"  ✓ SQL Server:     {str(row.v).splitlines()[0]}")
-        print(f"→ contando filas del universo…")
-        cur.execute(f"SELECT COUNT_BIG(*) FROM {TBL_FACTURAS}      WHERE {FILTRO_FACTURAS}")
-        print(f"  FACTURAS:      {cur.fetchone()[0]:>12,}")
-        cur.execute(f"SELECT COUNT_BIG(*) FROM {TBL_PRESTACIONES}  WHERE {FILTRO_PRESTACIONES}")
-        print(f"  PRESTACIONES:  {cur.fetchone()[0]:>12,}")
-        cur.execute(f"SELECT COUNT_BIG(*) FROM {TBL_NOMENCLADORES} WHERE {FILTRO_NOMENCLADORES}")
-        print(f"  NOMENCLADORES: {cur.fetchone()[0]:>12,}")
-        con.close()
-        print("✓ conexión OK")
-    except Exception as e:
-        print(f"✗ error de conexión:\n  {e}")
-        sys.exit(1)
-
-
-def load_table_chunked(con_sql: pyodbc.Connection,
-                       con_duck: duckdb.DuckDBPyConnection,
-                       query: str,
-                       tabla: str,
-                       hash_cols: list[str],
-                       chunksize: int) -> None:
-    hash_expr = build_hash_expr(hash_cols)
-    print(f"→ extrayendo {tabla} (chunks de {chunksize:,})...")
-    t0 = time.time()
-    total = 0
-    first = True
-
-    for i, chunk in enumerate(pd.read_sql(query, con_sql, chunksize=chunksize), start=1):
-        con_duck.register("tmp_chunk", chunk)
-
-        if first:
-            con_duck.execute(f"""
-                CREATE OR REPLACE TABLE {tabla} AS
-                SELECT *, {hash_expr} AS _row_hash
-                  FROM tmp_chunk
-                 WHERE 1=0
-            """)
-            first = False
-
-        con_duck.execute(f"""
-            INSERT INTO {tabla}
-            SELECT *, {hash_expr}
-              FROM tmp_chunk
-        """)
-        con_duck.unregister("tmp_chunk")
-        total += len(chunk)
-        elapsed = time.time() - t0
-        rate = total / elapsed if elapsed else 0
-        print(f"  chunk {i:>3}: {total:>10,} filas acumuladas   "
-              f"({elapsed:6.1f}s, {rate:,.0f} filas/s)")
-
-    if first:
-        print(f"  ⚠ {tabla}: 0 filas devueltas por la query")
-        return
-
-    n = con_duck.execute(f"SELECT COUNT(*) FROM {tabla}").fetchone()[0]
-    print(f"  ✓ {tabla}: {n:,} filas en {time.time()-t0:.1f}s")
-
-
-def guardar_metadatos(con_duck: duckdb.DuckDBPyConnection, fecha: str,
-                      tablas_hechas: list[str]) -> None:
-    con_duck.execute("""
-        CREATE OR REPLACE TABLE _meta (
-            snapshot_date       VARCHAR,
-            generated_at        TIMESTAMP,
-            tablas_incluidas    VARCHAR,
-            filtro_facturas     VARCHAR,
-            filtro_prestaciones VARCHAR,
-            filtro_nomencl      VARCHAR,
-            hash_facturas       VARCHAR,
-            hash_prestaciones   VARCHAR,
-            hash_nomencl        VARCHAR
+    /* ─────────────────  VOLVER AL TRABAJO — IMPACTO  ───────────────── */
+    function VolverImpacto({ nVolver, nTotal, ingMedVolver, ingMedSinVolver, perdidoMed, pctPerdidoMed, impactoTramos, cmp, nSinVolver }) {
+      const CmpRow = ({ label, v, s, invert }) => {
+        // invert=true significa "más alto es peor" (default). Coloreo en clay si Volver > Sin Volver.
+        const worse = v > s;
+        return /*#__PURE__*/React.createElement("div", {
+          className: "grid grid-cols-5 gap-2 items-center py-2",
+          style: { borderTop: `1px solid ${T.paper}` }
+        }, /*#__PURE__*/React.createElement("div", {
+          className: "col-span-2 text-xs",
+          style: { color: T.ink }
+        }, label), /*#__PURE__*/React.createElement("div", {
+          className: "col-span-3 grid grid-cols-2 gap-3"
+        }, /*#__PURE__*/React.createElement("div", null,
+          /*#__PURE__*/React.createElement("div", {
+            className: "flex items-baseline gap-1"
+          }, /*#__PURE__*/React.createElement("span", {
+            style: { color: worse ? T.clay : T.ink, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+            className: "text-lg leading-none font-medium"
+          }, v, "%")),
+          /*#__PURE__*/React.createElement("div", {
+            style: { background: T.paper }, className: "h-1.5 rounded-full overflow-hidden mt-1"
+          }, /*#__PURE__*/React.createElement("div", {
+            style: { width: `${Math.min(100, v)}%`, background: worse ? T.clay : T.indigo }, className: "h-full"
+          }))
+        ), /*#__PURE__*/React.createElement("div", null,
+          /*#__PURE__*/React.createElement("div", {
+            className: "flex items-baseline gap-1"
+          }, /*#__PURE__*/React.createElement("span", {
+            style: { color: T.muted, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+            className: "text-lg leading-none"
+          }, s, "%")),
+          /*#__PURE__*/React.createElement("div", {
+            style: { background: T.paper }, className: "h-1.5 rounded-full overflow-hidden mt-1"
+          }, /*#__PURE__*/React.createElement("div", {
+            style: { width: `${Math.min(100, s)}%`, background: T.faint }, className: "h-full"
+          }))
+        )));
+      };
+      const pctPerdidoLabel = isFinite(pctPerdidoMed) ? Math.round(pctPerdidoMed * 100) + "%" : "—";
+      return /*#__PURE__*/React.createElement(Card, {
+        className: "p-4 sm:p-5",
+        style: { borderTop: `3px solid ${T.clay}` }
+      },
+        /*#__PURE__*/React.createElement("div", {
+          className: "flex items-start gap-2 mb-3"
+        }, /*#__PURE__*/React.createElement(TrendingDown, { size: 17, style: { color: T.clay } }),
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("h3", {
+              style: { color: T.ink, fontFamily: sans },
+              className: "text-sm font-semibold leading-tight"
+            }, "Impacto de la discontinuación del programa Volver al Trabajo"),
+            /*#__PURE__*/React.createElement("p", {
+              style: { color: T.faint },
+              className: "text-xs mt-0.5"
+            }, "Hogares donde al menos una persona cobraba el programa · $70.000 por persona (4 o más = $280.000)"))
+        ),
+        /*#__PURE__*/React.createElement("div", {
+          className: "grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"
+        },
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "Hogares alcanzados", value: fmtInt(nVolver),
+            sub: `${pct(nVolver, nTotal)}% de la selección`,
+            color: T.indigo, icon: Users
+          }),
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "Ingreso mediano del hogar",
+            value: fmtARS(ingMedVolver),
+            sub: "mensual · ya sin Volver",
+            color: T.petrol, icon: Wallet
+          }),
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "Monto perdido mediano",
+            value: fmtARS(perdidoMed),
+            sub: "por hogar",
+            color: T.clay, icon: TrendingDown
+          }),
+          /*#__PURE__*/React.createElement(KPI, {
+            label: "% del ingreso perdido (mediana)",
+            value: pctPerdidoLabel,
+            sub: "sobre el ingreso previo",
+            color: T.clay, icon: AlertTriangle
+          })
+        ),
+        /*#__PURE__*/React.createElement("div", { className: "grid md:grid-cols-2 gap-4" },
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("div", {
+              style: { color: T.ink, fontFamily: sans },
+              className: "text-xs font-semibold mb-2"
+            }, "Distribución del impacto"),
+            /*#__PURE__*/React.createElement("div", {
+              style: { color: T.faint },
+              className: "text-xs mb-2"
+            }, "Porcentaje del ingreso previo que representaba el programa"),
+            impactoTramos.some(t => t.value > 0)
+              ? /*#__PURE__*/React.createElement(RankBars, { items: impactoTramos, showPct: true, denom: nVolver })
+              : /*#__PURE__*/React.createElement(Empty, null)
+          ),
+          /*#__PURE__*/React.createElement("div", null,
+            /*#__PURE__*/React.createElement("div", {
+              style: { color: T.ink, fontFamily: sans },
+              className: "text-xs font-semibold mb-2"
+            }, "Comparación con el resto de los hogares"),
+            /*#__PURE__*/React.createElement("div", {
+              className: "grid grid-cols-5 gap-2 items-baseline pb-2"
+            },
+              /*#__PURE__*/React.createElement("div", { className: "col-span-2" }),
+              /*#__PURE__*/React.createElement("div", {
+                className: "col-span-3 grid grid-cols-2 gap-3",
+                style: { color: T.faint, fontSize: 10 }
+              },
+                /*#__PURE__*/React.createElement("div", null,
+                  /*#__PURE__*/React.createElement("div", { style: { color: T.clay, fontWeight: 600 } }, "Con Volver"),
+                  /*#__PURE__*/React.createElement("div", null, "n = ", fmtInt(nVolver))
+                ),
+                /*#__PURE__*/React.createElement("div", null,
+                  /*#__PURE__*/React.createElement("div", { style: { color: T.muted, fontWeight: 600 } }, "Sin Volver"),
+                  /*#__PURE__*/React.createElement("div", null, "n = ", fmtInt(nSinVolver))
+                )
+              )
+            ),
+            /*#__PURE__*/React.createElement("div", {
+              className: "grid grid-cols-5 gap-2 items-center py-2",
+              style: { borderTop: `1px solid ${T.paper}` }
+            },
+              /*#__PURE__*/React.createElement("div", { className: "col-span-2 text-xs", style: { color: T.ink } }, "Ingreso mediano del hogar"),
+              /*#__PURE__*/React.createElement("div", { className: "col-span-3 grid grid-cols-2 gap-3" },
+                /*#__PURE__*/React.createElement("span", {
+                  style: { color: T.clay, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+                  className: "text-sm font-medium"
+                }, fmtARS(ingMedVolver)),
+                /*#__PURE__*/React.createElement("span", {
+                  style: { color: T.muted, fontFamily: serif, fontVariantNumeric: "tabular-nums" },
+                  className: "text-sm"
+                }, fmtARS(ingMedSinVolver))
+              )
+            ),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "Con al menos una deuda", v: cmp.endeudados.v, s: cmp.endeudados.s }),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "En mora (90+ días)", v: cmp.mora.v, s: cmp.mora.s }),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "Sobreendeudamiento", v: cmp.sobre.v, s: cmp.sobre.s }),
+            /*#__PURE__*/React.createElement(CmpRow, { label: "Redujeron alimentación", v: cmp.alim.v, s: cmp.alim.s })
+          )
         )
-    """)
-    con_duck.execute("""
-        INSERT INTO _meta VALUES (?, now(), ?, ?, ?, ?, ?, ?, ?)
-    """, [
-        fecha, ",".join(tablas_hechas),
-        FILTRO_FACTURAS, FILTRO_PRESTACIONES, FILTRO_NOMENCLADORES,
-        ",".join(HASH_FACTURAS),
-        ",".join(HASH_PRESTACIONES),
-        ",".join(HASH_NOMENCLADORES),
-    ])
+      );
+    }
 
+    /* ─────────────────  TAB: ENDEUDAMIENTO  ───────────────── */
+    function Deuda({
+      data
+    }) {
+      const n = data.length;
+      const conDeuda = data.filter(r => r.tieneDeuda);
+      const nD = conDeuda.length;
+      // Mora y atraso son mutuamente excluyentes: primero se identifica la mora (90+ días),
+      // y luego el atraso entre los hogares restantes (no al día, pero sin ninguna deuda en mora).
+      // Ambos se calculan sobre el universo de hogares endeudados (nD), no sobre el total de encuestas.
+      const mora = conDeuda.filter(r => r.inMora).length;
+      const atraso = conDeuda.filter(r => r.inArrears && !r.inMora).length;
+      const alDiaHog = nD - mora - atraso;
+      const sobre = data.filter(r => r.overIndebted).length;
+      const nsiBase = data.map(r => isFinite(r.nSi) && r.nSi > 0 ? r.nSi : r.creditorsCount).filter(x => x > 0);
+      const acreedProm = mean(nsiBase);
+      const totalDeudaHogar = r => r.debts.reduce((s, d) => s + (isFinite(d.debeHoy) ? d.debeHoy : 0), 0);
+      const deudaProm = mean(conDeuda.map(totalDeudaHogar).filter(x => x > 0));
+      const estadoDeuda = [{
+        name: "Al día",
+        v: alDiaHog,
+        c: T.petrol
+      }, {
+        name: "Atrasado",
+        v: atraso,
+        c: T.amber
+      }, {
+        name: "En mora",
+        v: mora,
+        c: T.clay
+      }].filter(x => x.v > 0);
+      const credLbl = {
+        banco: "Banco / crédito personal",
+        financiera: "Financiera",
+        fintech: "Fintech / billetera / app",
+        tarjeta_banco: "Tarjeta bancaria",
+        tarjeta_comercio: "Tarjeta de comercio",
+        cuotas_comercio: "Cuotas en comercio",
+        fiado: "Fiado en el barrio",
+        prestamista: "Prestamista (gota a gota)",
+        familiar: "Familiar / conocido",
+        cooperativa: "Cooperativa / mutual",
+        servicios: "Servicios vencidos",
+        alquiler: "Alquiler vencido",
+        otro: "Otro"
+      };
+      const credGroup = {
+        banco: "formal",
+        financiera: "formal",
+        fintech: "formal",
+        tarjeta_banco: "formal",
+        tarjeta_comercio: "formal",
+        cuotas_comercio: "formal",
+        cooperativa: "formal",
+        fiado: "informal",
+        prestamista: "informal",
+        familiar: "informal",
+        servicios: "vivienda",
+        alquiler: "vivienda",
+        otro: "otro"
+      };
+      const groupColor = {
+        formal: T.indigo,
+        informal: T.clay,
+        vivienda: T.amber,
+        otro: T.faint
+      };
+      const cred = Object.keys(credLbl).map(k => ({
+        key: k,
+        label: credLbl[k],
+        value: data.filter(r => r.creditors[k]).length,
+        color: groupColor[credGroup[k]]
+      })).sort((a, b) => b.value - a.value);
+      const usa = grp => data.filter(r => Object.keys(credGroup).some(k => credGroup[k] === grp && r.creditors[k])).length;
+      const spectrum = [{
+        name: "Crédito formal",
+        v: usa("formal"),
+        c: T.indigo
+      }, {
+        name: "Fuentes informales",
+        v: usa("informal"),
+        c: T.clay
+      }, {
+        name: "Gastos de vivienda",
+        v: usa("vivienda"),
+        c: T.amber
+      }].filter(x => x.v > 0);
+      const fintech = data.filter(r => r.creditors.fintech).length;
+      const gota = data.filter(r => r.creditors.prestamista).length;
+      const apuestas = data.filter(r => r.atribucion.has("apuestas") || r.debts.some(d => norm(d.motivo).includes("apuesta"))).length;
+      const bicicleta = data.filter(r => r.refinancio || r.atribucion.has("pago_deuda") || r.debts.some(d => norm(d.motivo).includes("otra deuda"))).length;
+      const atribLbl = {
+        ingresos_insuf: "Ingresos insuficientes",
+        aumento_precios: "Aumento de precios",
+        perdida_empleo: "Pérdida de empleo / ingresos",
+        alimentos: "Compra de alimentos",
+        alquiler: "Pago de alquiler",
+        servicios: "Pago de servicios",
+        salud: "Salud / medicamentos",
+        educacion: "Gastos escolares",
+        vivienda: "Mejora de vivienda",
+        inversion_laboral: "Inversión laboral",
+        pago_deuda: "Pagar otra deuda",
+        apuestas: "Apuestas / juego online",
+        emergencia: "Emergencia imprevista"
+      };
+      const atrib = Object.keys(atribLbl).map(k => ({
+        label: atribLbl[k],
+        value: data.filter(r => r.atribucion.has(k)).length,
+        color: k === "apuestas" ? T.clay : T.petrol
+      })).filter(x => x.value).sort((a, b) => b.value - a.value);
+      const antigOrder = ["Hace menos de 6 meses", "Entre 6 meses y 1 año", "Entre 1 y 2 años", "Entre 2 y 4 años", "Hace más de 4 años", "No sabe / no recuerda"];
+      const antig = ordered(countBy(conDeuda, r => r.antiguedad), antigOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: T.olive
+      }));
+      const bcraOrder = ["Está al día / no tiene atraso", "Hasta 31 días de atraso", "Más de 31 y hasta 90 días", "Más de 90 y hasta 180 días", "Más de 180 días y hasta 1 año", "Más de 1 año y hasta 2 años", "Más de 2 años y hasta 3 años", "Más de 3 años y hasta 4 años", "Más de 4 años", "No sabe / no recuerda"];
+      const bcraCount = {};
+      data.forEach(r => r.debts.forEach(d => {
+        const k = String(d.alDia || "").trim();
+        if (k) bcraCount[k] = (bcraCount[k] || 0) + 1;
+      }));
+      const totalDebts = Object.values(bcraCount).reduce((a, b) => a + b, 0);
+      const bcra = ordered(Object.entries(bcraCount).map(([key, n]) => ({
+        key,
+        n
+      })), bcraOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: norm(d.key).includes("al dia") ? T.petrol : norm(d.key).includes("no sabe") ? T.faint : T.amber
+      }));
+      const tarjetaDebts = [];
+      conDeuda.forEach(r => r.debts.forEach(d => {
+        if (norm(d.tipo).includes("tarjeta")) tarjetaDebts.push(d.pagoTarjeta);
+      }));
+      const pagoTarjetaColor = label => {
+        const nl = norm(label);
+        if (nl.includes("minim")) return T.amber;
+        if (nl.includes("no est") && nl.includes("pag")) return T.clay;
+        if (nl.includes("total") || nl.includes("complet")) return T.petrol;
+        return T.faint;
+      };
+      const pagoTarjeta = countBy(tarjetaDebts.filter(Boolean), x => x).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: pagoTarjetaColor(d.key)
+      }));
+      const refinancioSi = conDeuda.filter(r => r.refinancio).length;
+      const refinancio = [{
+        label: "S\xED, tuvo que refinanciar",
+        value: refinancioSi,
+        color: T.clay
+      }, {
+        label: "No",
+        value: nD - refinancioSi,
+        color: T.olive
+      }];
+      // Motivo por el que se contrajo la deuda
+      const motivoColor = label => {
+        const nl = norm(label);
+        if (nl.includes("alimenta")) return T.clay;
+        if (nl.includes("otra deuda")) return "#7A2818";
+        if (nl.includes("salud") || nl.includes("medic")) return T.clay;
+        if (nl.includes("aliment") || nl.includes("alquiler") || nl.includes("servicios")) return T.amber;
+        if (nl.includes("vivienda") || nl.includes("mejora")) return T.olive;
+        if (nl.includes("electro") || nl.includes("indument") || nl.includes("transport")) return T.indigo;
+        if (nl.includes("emergencia") || nl.includes("imprevist")) return T.amber;
+        if (nl.includes("educacion") || nl.includes("escolar")) return T.petrol;
+        if (nl.includes("capital") || nl.includes("changa") || nl.includes("laboral")) return T.petrol;
+        if (nl.includes("apuest")) return "#7A2818";
+        return T.faint;
+      };
+      const motivosPrimera = countBy(
+        conDeuda.map(r => r.debts[0]).filter(d => d && d.motivo && String(d.motivo).trim()),
+        d => String(d.motivo).trim()
+      ).map(x => ({ label: x.key, value: x.n, color: motivoColor(x.key) }));
+      const nPrimera = motivosPrimera.reduce((s, x) => s + x.value, 0);
+      const todosMotivosFlat = [];
+      conDeuda.forEach(r => r.debts.forEach(d => {
+        if (d && d.motivo && String(d.motivo).trim()) todosMotivosFlat.push(String(d.motivo).trim());
+      }));
+      const motivosTodos = countBy(todosMotivosFlat, x => x).map(x => ({
+        label: x.key, value: x.n, color: motivoColor(x.key)
+      }));
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 lg:grid-cols-4 gap-3"
+      }, /*#__PURE__*/React.createElement(Indicator, {
+        title: "Endeudamiento",
+        value: pct(nD, n),
+        count: nD,
+        total: n,
+        color: T.petrol,
+        bg: T.petrolSoft,
+        icon: Wallet,
+        def: "Hogares con al menos una deuda, pr\xE9stamo o pago pendiente vigente."
+      }), /*#__PURE__*/React.createElement(Indicator, {
+        title: "Atraso",
+        value: pct(atraso, nD),
+        count: atraso,
+        total: nD,
+        color: T.amber,
+        bg: T.amberSoft,
+        icon: TrendingDown,
+        def: "Hogares endeudados con alguna deuda no al d\xEDa pero sin ninguna en mora (90+ d\xEDas). Sobre el total de hogares endeudados; excluyente con mora."
+      }), /*#__PURE__*/React.createElement(Indicator, {
+        title: "Mora (90+ d\xEDas)",
+        value: pct(mora, nD),
+        count: mora,
+        total: nD,
+        color: T.clay,
+        bg: T.claySoft,
+        icon: AlertTriangle,
+        def: "Hogares endeudados con al menos una deuda con atraso de 90 d\xEDas o m\xE1s (situaci\xF3n BCRA). Sobre el total de hogares endeudados; excluyente con atraso."
+      }), /*#__PURE__*/React.createElement(Indicator, {
+        title: "Sobreendeudamiento",
+        value: pct(sobre, n),
+        count: sobre,
+        total: n,
+        color: "#6B5B95",
+        bg: "#ECE7F1",
+        icon: AlertTriangle,
+        def: "Cumple \u22651 de: destina \u226525% del ingreso a deuda \xB7 paga con mucha dificultad o no puede \xB7 redujo alimentaci\xF3n para pagar."
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-3 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Acreedores por hogar (promedio)",
+        value: fmtDec(acreedProm, 1),
+        sub: "entre hogares endeudados \xB7 columna n_si",
+        color: T.petrol,
+        icon: HandCoins
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Deuda promedio por hogar",
+        value: fmtARS(deudaProm),
+        sub: "suma de lo que debe hoy por cada deuda \xB7 entre hogares endeudados",
+        color: T.clay,
+        icon: Wallet
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Estado de la deuda",
+        hint: "Sobre el 100% de los hogares endeudados \xB7 mora y atraso son excluyentes",
+        icon: TrendingDown
+      }, /*#__PURE__*/React.createElement(Donut, {
+        data: estadoDeuda,
+        fmt: fmtInt,
+        suffix: " hogares"
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Formal vs. informal",
+        hint: "Hogares que usan cada tipo de fuente",
+        icon: Layers
+      }, /*#__PURE__*/React.createElement(Donut, {
+        data: spectrum,
+        fmt: fmtInt,
+        suffix: " hogares"
+      }))), /*#__PURE__*/React.createElement(Section, {
+        title: "Espectro de acreedores",
+        hint: "Prevalencia por tipo de fuente \xB7 un hogar puede tener varias",
+        icon: HandCoins,
+        right: /*#__PURE__*/React.createElement("div", {
+          className: "hidden sm:flex gap-2"
+        }, /*#__PURE__*/React.createElement(Pill, {
+          color: T.indigo,
+          bg: T.indigoSoft
+        }, "formal"), /*#__PURE__*/React.createElement(Pill, {
+          color: T.clay,
+          bg: T.claySoft
+        }, "informal"), /*#__PURE__*/React.createElement(Pill, {
+          color: T.amber,
+          bg: T.amberSoft
+        }, "vencidas"))
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: cred,
+        showPct: true,
+        denom: n
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Se\xF1ales de alerta",
+        hint: "Motores emergentes de endeudamiento",
+        icon: AlertTriangle
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 sm:grid-cols-4 gap-3"
+      }, /*#__PURE__*/React.createElement(MiniStat, {
+        label: "Fintech / billeteras",
+        value: pct(fintech, n),
+        count: fintech,
+        icon: Smartphone,
+        color: T.indigo
+      }), /*#__PURE__*/React.createElement(MiniStat, {
+        label: "Prestamista (gota a gota)",
+        value: pct(gota, n),
+        count: gota,
+        icon: HandCoins,
+        color: T.clay
+      }), /*#__PURE__*/React.createElement(MiniStat, {
+        label: "Apuestas / juego online",
+        value: pct(apuestas, n),
+        count: apuestas,
+        icon: Dice5,
+        color: T.clay
+      }), /*#__PURE__*/React.createElement(MiniStat, {
+        label: "Deuda para pagar deuda",
+        value: pct(bicicleta, n),
+        count: bicicleta,
+        icon: Recycle,
+        color: T.amber
+      }))), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "\xBFA qu\xE9 atribuyen el endeudamiento?",
+        hint: "Respuesta m\xFAltiple",
+        icon: Info
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: atrib,
+        showPct: true,
+        denom: n
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "Antig\xFCedad del endeudamiento",
+        icon: Activity
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: antig,
+        showPct: true,
+        denom: nD
+      }))), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Motivo de la deuda principal",
+        hint: `Sobre ${fmtInt(nPrimera)} hogares · solo la primera deuda declarada (la de mayor valor)`,
+        icon: Info
+      }, motivosPrimera.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: motivosPrimera,
+        showPct: true,
+        denom: nPrimera
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "Motivo del conjunto de las deudas",
+        hint: `Sobre ${fmtInt(todosMotivosFlat.length)} deudas · hasta 3 por hogar`,
+        icon: Layers
+      }, motivosTodos.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: motivosTodos,
+        showPct: true,
+        denom: todosMotivosFlat.length
+      }) : /*#__PURE__*/React.createElement(Empty, null))), /*#__PURE__*/React.createElement(Section, {
+        title: "Estado de las deudas (situaci\xF3n BCRA)",
+        hint: `Sobre ${fmtInt(totalDebts)} deudas caracterizadas (hasta 3 por hogar)`,
+        icon: TrendingDown
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: bcra,
+        showPct: true,
+        denom: totalDebts
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Pago del resumen de tarjeta",
+        hint: `Sobre ${fmtInt(tarjetaDebts.filter(Boolean).length)} deudas de tarjeta declaradas (hasta 3 por hogar)`,
+        icon: HandCoins
+      }, pagoTarjeta.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: pagoTarjeta,
+        showPct: true,
+        denom: tarjetaDebts.filter(Boolean).length
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "\xBFTuvo que refinanciar alguna deuda?",
+        hint: "Entre hogares endeudados",
+        icon: Recycle
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: refinancio,
+        showPct: true,
+        denom: nD
+      }))));
+    }
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--fecha", default=dt.date.today().isoformat(),
-                        help="Fecha del snapshot YYYY-MM-DD (default: hoy)")
-    parser.add_argument("--tablas", default="facturas,prestaciones,nomencladores",
-                        help="Tablas a extraer (coma-separadas)")
-    parser.add_argument("--chunk", type=int, default=DEFAULT_CHUNKSIZE,
-                        help=f"Tamaño de chunk (default: {DEFAULT_CHUNKSIZE:,})")
-    parser.add_argument("--test-conexion", action="store_true",
-                        help="Solo probar conexión y contar filas, no extraer")
-    args = parser.parse_args()
+    /* ─────────────────  TAB: VULNERABILIDAD  ───────────────── */
+    function Vulnerabilidad({
+      data
+    }) {
+      const n = data.length;
+      const conDeuda = data.filter(r => r.tieneDeuda);
+      const nD = conDeuda.length;
+      const propOrder = ["Menos del 10%", "Entre 10% y 25%", "Entre 25% y 50%", "Más del 50%", "No sabe"];
+      const propIng = ordered(countBy(conDeuda.filter(r => r.propIngreso), r => r.propIngreso), propOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: ["Entre 25% y 50%", "Más del 50%"].includes(d.key) ? T.clay : d.key === "No sabe" ? T.faint : T.amber
+      }));
+      const capOrder = ["Sin dificultad", "Con cierta dificultad", "Con mucha dificultad", "No puede pagarlas"];
+      const capacidadPago = ordered(countBy(conDeuda.filter(r => r.capacidad), r => r.capacidad), capOrder).map(d => ({
+        label: d.key,
+        value: d.n,
+        color: ["Con mucha dificultad", "No puede pagarlas"].includes(d.key) ? T.clay : d.key === "Sin dificultad" ? T.olive : T.amber
+      }));
+      const coLbl = {
+        llamados: "Llamados / mensajes reiterados",
+        contacto_terceros: "Contacto a familiares o trabajo",
+        visitas: "Visitas al domicilio",
+        exposicion_publica: "Exposición pública o en redes",
+        amenazas_verbales: "Amenazas verbales",
+        amenazas_fisicas: "Amenazas o daños físicos",
+        retencion_bienes: "Retención de documentos o bienes"
+      };
+      const grave = ["amenazas_fisicas", "retencion_bienes", "amenazas_verbales"];
+      const co = Object.keys(coLbl).map(k => ({
+        label: coLbl[k],
+        value: data.filter(r => r.coercion.has(k)).length,
+        color: grave.includes(k) ? T.clay : k === "amenazas_verbales" ? "#C25B3A" : T.amber
+      })).filter(x => x.value).sort((a, b) => b.value - a.value);
+      const conCoercion = data.filter(r => [...r.coercion].some(k => k !== "sin_presion" && k !== "prefiere_no")).length;
+      const conGrave = data.filter(r => grave.some(k => r.coercion.has(k))).length;
+      const nivelOrder = ["Nada", "Un poco", "Bastante", "Mucho", "Muchísimo"];
+      const nivel = ordered(countBy(conDeuda, r => r.afectacionNivel), nivelOrder).filter(d => d.key && d.key !== "Sin dato").map((d, i) => ({
+        label: d.key,
+        value: d.n,
+        color: ["#9AA0A6", T.olive, T.amber, "#C25B3A", T.clay][nivelOrder.indexOf(d.key)] || T.petrol
+      }));
+      const ambLbl = {
+        sueno: "Sueño / descanso",
+        animo: "Ánimo / estado emocional",
+        salud_fisica: "Salud física",
+        relaciones: "Relación familiar / pareja",
+        concentracion: "Concentración"
+      };
+      const amb = Object.keys(ambLbl).map(k => ({
+        label: ambLbl[k],
+        value: data.filter(r => r.afect.has(k)).length,
+        color: T.indigo
+      })).filter(x => x.value).sort((a, b) => b.value - a.value);
+      const redLbl = {
+        alimentacion: "Alimentación",
+        salud: "Salud / medicamentos",
+        educacion: "Educación",
+        servicios: "Servicios",
+        transporte: "Transporte",
+        indumentaria: "Indumentaria",
+        recreacion: "Recreación",
+        vivienda: "Vivienda",
+        trabajo: "Trabajo / emprendimiento",
+        pago_deudas: "Otras deudas",
+        alquiler: "Alquiler"
+      };
+      const red = Object.keys(redLbl).map(k => ({
+        label: redLbl[k],
+        value: data.filter(r => r.redujo.has(k)).length,
+        color: k === "alimentacion" || k === "salud" ? T.clay : T.amber
+      })).filter(x => x.value).sort((a, b) => b.value - a.value);
+      const comida = data.filter(r => r.disminuyoComida).length;
+      const comedor = data.filter(r => r.comedor).length;
+      const alimUnion = data.filter(r => r.disminuyoComida || r.comedor).length;
+      const sitOrder = ["Empeoró", "Se mantuvo igual", "Mejoró"];
+      const sit = ordered(countBy(data, r => r.situacion), sitOrder).filter(d => d.key && d.key !== "Sin dato").map(d => ({
+        label: d.key,
+        value: d.n,
+        color: d.key === "Empeoró" ? T.clay : d.key === "Mejoró" ? T.olive : T.faint
+      }));
+      return /*#__PURE__*/React.createElement("div", {
+        className: "mt-4 space-y-4"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "grid grid-cols-2 md:grid-cols-4 gap-3"
+      }, /*#__PURE__*/React.createElement(KPI, {
+        label: "Con pr\xE1cticas de cobranza",
+        value: pct(conCoercion, n) + "%",
+        sub: `${conCoercion} de ${n}`,
+        color: T.amber,
+        icon: ShieldAlert
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Con pr\xE1cticas graves",
+        value: fmtInt(conGrave),
+        sub: "amenazas f\xEDsicas o retenci\xF3n de bienes",
+        color: T.clay,
+        icon: AlertTriangle
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Redujeron alimentaci\xF3n",
+        value: pct(comida, n) + "%",
+        sub: `${comida} hogares`,
+        color: T.clay,
+        icon: Utensils
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Asisten a comedor / vianda",
+        value: pct(comedor, n) + "%",
+        sub: `${comedor} hogares`,
+        color: T.amber
+      })), /*#__PURE__*/React.createElement(Indicator, {
+        title: "Inseguridad alimentaria (combinado)",
+        value: pct(alimUnion, n),
+        count: alimUnion,
+        total: n,
+        color: T.clay,
+        bg: T.claySoft,
+        icon: Utensils,
+        def: "Hogares que tuvieron que disminuir alguna comida diaria o que asisten a un comedor / reciben viandas \u2014 uni\xF3n de ambos, sin doble conteo."
+      }), /*#__PURE__*/React.createElement(Section, {
+        title: "Pr\xE1cticas de cobranza coercitiva",
+        hint: "Desagregadas por tipo \xB7 rojo = pr\xE1cticas graves",
+        icon: ShieldAlert
+      }, co.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: co,
+        showPct: true,
+        denom: n
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Impacto en el bienestar",
+        hint: "Cu\xE1nto afectan las deudas la vida diaria \xB7 entre hogares endeudados",
+        icon: Activity
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: nivel,
+        showPct: true,
+        denom: nD
+      })), /*#__PURE__*/React.createElement(Section, {
+        title: "\xC1mbitos afectados",
+        hint: "Respuesta m\xFAltiple",
+        icon: Activity
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: amb,
+        showPct: true,
+        denom: n
+      }))), /*#__PURE__*/React.createElement(Section, {
+        title: "Ajustes para poder pagar",
+        hint: "Qu\xE9 gastos redujeron o dejaron de pagar \xB7 rojo = alimentaci\xF3n y salud",
+        icon: TrendingDown
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: red,
+        showPct: true,
+        denom: n
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Proporci\xF3n del ingreso destinada a pagar deudas",
+        hint: "Entre hogares endeudados",
+        icon: Info
+      }, propIng.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: propIng,
+        showPct: true,
+        denom: nD
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "Capacidad de pago percibida",
+        hint: "Entre hogares endeudados",
+        icon: Info
+      }, capacidadPago.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: capacidadPago,
+        showPct: true,
+        denom: nD
+      }) : /*#__PURE__*/React.createElement(Empty, null))), /*#__PURE__*/React.createElement(Section, {
+        title: "Situaci\xF3n econ\xF3mica percibida",
+        hint: "En el \xFAltimo a\xF1o",
+        icon: Info
+      }, /*#__PURE__*/React.createElement(RankBars, {
+        items: sit,
+        showPct: true,
+        denom: n
+      })));
+    }
 
-    if args.test_conexion:
-        test_conexion()
-        return
+    /* ─────────────────  SHARED WIDGETS  ───────────────── */
+    function Indicator({
+      title,
+      value,
+      count,
+      total,
+      color,
+      bg,
+      icon: Icon,
+      def
+    }) {
+      return /*#__PURE__*/React.createElement(Card, {
+        className: "p-4",
+        style: {
+          borderTop: `3px solid ${color}`
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center justify-between"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.ink
+        },
+        className: "text-sm font-semibold"
+      }, title), /*#__PURE__*/React.createElement("span", {
+        style: {
+          background: bg,
+          color
+        },
+        className: "p-1.5 rounded-lg"
+      }, /*#__PURE__*/React.createElement(Icon, {
+        size: 15
+      }))), /*#__PURE__*/React.createElement("div", {
+        className: "flex items-end gap-2 mt-2"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color,
+          fontFamily: serif
+        },
+        className: "text-4xl leading-none"
+      }, value, "%"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.faint
+        },
+        className: "text-xs mb-1"
+      }, fmtInt(count), " de ", fmtInt(total), " hogares")), /*#__PURE__*/React.createElement("p", {
+        style: {
+          color: T.muted
+        },
+        className: "text-xs mt-2.5 leading-snug"
+      }, def));
+    }
+    function MiniStat({
+      label,
+      value,
+      count,
+      icon: Icon,
+      color
+    }) {
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          background: T.paper
+        },
+        className: "rounded-lg p-3"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center gap-1.5"
+      }, /*#__PURE__*/React.createElement(Icon, {
+        size: 14,
+        style: {
+          color
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.muted
+        },
+        className: "text-xs"
+      }, label)), /*#__PURE__*/React.createElement("div", {
+        className: "flex items-baseline gap-1.5 mt-1"
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.ink,
+          fontFamily: serif
+        },
+        className: "text-2xl leading-none"
+      }, value, "%"), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.faint
+        },
+        className: "text-xs"
+      }, fmtInt(count))));
+    }
+    function Donut({
+      data,
+      fmt = fmtInt,
+      suffix = ""
+    }) {
+      const total = data.reduce((s, d) => s + d.v, 0);
+      if (!total) return /*#__PURE__*/React.createElement(Empty, null);
+      return /*#__PURE__*/React.createElement("div", {
+        className: "flex items-center gap-4 flex-col sm:flex-row"
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          width: 150,
+          height: 150
+        },
+        className: "shrink-0"
+      }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+        width: "100%",
+        height: "100%"
+      }, /*#__PURE__*/React.createElement(PieChart, null, /*#__PURE__*/React.createElement(Pie, {
+        data: data,
+        dataKey: "v",
+        nameKey: "name",
+        innerRadius: 44,
+        outerRadius: 72,
+        paddingAngle: 2,
+        stroke: "none"
+      }, data.map((d, i) => /*#__PURE__*/React.createElement(Cell, {
+        key: i,
+        fill: d.c
+      }))), /*#__PURE__*/React.createElement(Tooltip, {
+        formatter: (v, n) => [fmt(v) + suffix, n],
+        contentStyle: {
+          fontSize: 12,
+          borderRadius: 8,
+          border: `1px solid ${T.line}`
+        }
+      })))), /*#__PURE__*/React.createElement("div", {
+        className: "flex-1 w-full space-y-1.5"
+      }, data.map((d, i) => /*#__PURE__*/React.createElement("div", {
+        key: i,
+        className: "flex items-center justify-between text-xs"
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "flex items-center gap-2",
+        style: {
+          color: T.ink
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          background: d.c,
+          width: 10,
+          height: 10,
+          borderRadius: 3,
+          display: "inline-block"
+        }
+      }), d.name), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: T.muted,
+          fontVariantNumeric: "tabular-nums"
+        },
+        className: "font-medium"
+      }, pct(d.v, total), "%")))));
+    }
 
-    dt.date.fromisoformat(args.fecha)
-    tablas_a_hacer = [t.strip() for t in args.tablas.split(",")]
-    for t in tablas_a_hacer:
-        if t not in TABLAS_CONFIG:
-            print(f"✗ tabla desconocida: {t}. Válidas: {list(TABLAS_CONFIG)}")
-            sys.exit(1)
-
-    SNAPSHOTS_DIR.mkdir(exist_ok=True, parents=True)
-    out_path = SNAPSHOTS_DIR / f"snapshot_{args.fecha}.duckdb"
-    if out_path.exists():
-        print(f"⚠ ya existe {out_path}. Borralo si querés re-generarlo.")
-        sys.exit(1)
-
-    print(f"═══ snapshot {args.fecha} → {out_path} ═══")
-    print(f"  tablas: {tablas_a_hacer}")
-    print(f"  chunk:  {args.chunk:,}")
-
-    con_sql = pyodbc.connect(CONN_STR)
-    con_duck = duckdb.connect(str(out_path))
-    try:
-        for tabla in tablas_a_hacer:
-            cfg = TABLAS_CONFIG[tabla]
-            load_table_chunked(
-                con_sql, con_duck, cfg["query"], tabla,
-                cfg["hash_cols"], args.chunk,
-            )
-        guardar_metadatos(con_duck, args.fecha, tablas_a_hacer)
-        print()
-        print(f"✓ snapshot completo: {out_path}")
-    finally:
-        con_duck.close()
-        con_sql.close()
-
-
-if __name__ == "__main__":
-    main()
+    /* ─────────────────  AGG UTILS  ───────────────── */
+    function countBy(arr, keyFn) {
+      const m = {};
+      arr.forEach(r => {
+        const k = keyFn(r) || "Sin dato";
+        m[k] = (m[k] || 0) + 1;
+      });
+      return Object.entries(m).map(([key, n]) => ({
+        key,
+        n
+      })).sort((a, b) => b.n - a.n);
+    }
+    function ordered(counts, order) {
+      const m = {};
+      counts.forEach(c => m[c.key] = c.n);
+      const known = order.filter(o => m[o] != null).map(o => ({
+        key: o,
+        n: m[o]
+      }));
+      const extra = counts.filter(c => !order.includes(c.key));
+      return [...known, ...extra];
+    }
+    function histogram(vals, edges, labels) {
+      const bins = labels.map(label => ({
+        label,
+        n: 0
+      }));
+      vals.forEach(v => {
+        for (let i = 0; i < labels.length; i++) {
+          if (v >= edges[i] && v < edges[i + 1]) {
+            bins[i].n++;
+            break;
+          }
+        }
+      });
+      return bins.filter(b => b.n > 0);
+    }
+    const _root = ReactDOM.createRoot(document.getElementById("root"));
+    _root.render(React.createElement(App));
+  } catch (e) {
+    showFatal(e);
+  }
+})();
+</script>
+</body>
+</html>
