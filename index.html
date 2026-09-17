@@ -364,6 +364,12 @@
       const n = parseFloat(t);
       return isNaN(n) ? NaN : n;
     }
+    // En los campos monetarios / de cuotas, el valor 99 es un código de "no sabe":
+    // se ignora ese dato (queda como NaN) para no contaminar promedios ni medianas.
+    function num99(v) {
+      const n = num(v);
+      return n === 99 ? NaN : n;
+    }
     function median(arr) {
       const a = arr.filter(x => isFinite(x)).sort((x, y) => x - y);
       if (!a.length) return NaN;
@@ -567,11 +573,18 @@
         return s;
       };
       return rows.map((r, ri) => {
-        const ingT = num(g(r, C.ingTrabajo)) || 0,
-          ingP = num(g(r, C.ingProgramas)) || 0,
-          ingJ = num(g(r, C.ingJubil)) || 0,
-          ingO = num(g(r, C.ingOtros)) || 0;
-        const ingTotal = ingT + ingP + ingJ + ingO;
+        const rawIngT = num(g(r, C.ingTrabajo)),
+          rawIngP = num(g(r, C.ingProgramas)),
+          rawIngJ = num(g(r, C.ingJubil)),
+          rawIngO = num(g(r, C.ingOtros));
+        // 99 = "no sabe": ese componente no suma, y si alguno es 99 el ingreso total
+        // del hogar queda desconocido (NaN) y se excluye de medianas/ratios.
+        const ingUnknown = [rawIngT, rawIngP, rawIngJ, rawIngO].some(x => x === 99);
+        const ingT = rawIngT === 99 ? 0 : rawIngT || 0,
+          ingP = rawIngP === 99 ? 0 : rawIngP || 0,
+          ingJ = rawIngJ === 99 ? 0 : rawIngJ || 0,
+          ingO = rawIngO === 99 ? 0 : rawIngO || 0;
+        const ingTotal = ingUnknown ? NaN : ingT + ingP + ingJ + ingO;
         const creditors = {};
         for (const k in C.creditors) creditors[k] = isSi(g(r, C.creditors[k]));
         const debts = [];
@@ -596,10 +609,10 @@
           debts.push({
             tipo: String(tipo || ""),
             motivo: g(r, b.motivo),
-            montoInicial: num(g(r, b.montoInicial)),
-            cuotas: num(g(r, b.cuotas)),
-            valorCuota: num(g(r, b.valorCuota)),
-            debeHoy: num(g(r, b.debeHoy)),
+            montoInicial: num99(g(r, b.montoInicial)),
+            cuotas: num99(g(r, b.cuotas)),
+            valorCuota: num99(g(r, b.valorCuota)),
+            debeHoy: num99(g(r, b.debeHoy)),
             alDia,
             modalidad: g(r, b.modalidad),
             pagoTarjeta: pagoTarjetaIdx != null && pagoTarjetaIdx >= 0 ? (g(r, pagoTarjetaIdx) || "").toString().trim() : ""
@@ -616,10 +629,12 @@
           gastosTop = optSet(r, C.gastos);
         const propIngreso = g(r, C.propIngreso),
           capacidad = g(r, C.capacidadPago);
-        const oiA = ["entre 25% y 50%", "mas del 50%"].includes(norm(propIngreso));
-        const oiB = ["con mucha dificultad", "no puede pagarlas"].includes(norm(capacidad));
-        const oiC = redujo.has("alimentacion");
         const tieneDeuda = isSi(g(r, C.tieneDeuda)) || Object.values(creditors).some(Boolean) || debts.length > 0;
+        // Sobreendeudamiento: SOLO hogares con deuda vigente que cumplen ≥1 criterio.
+        const oiA = ["entre 25% y 50%", "mas del 50%"].includes(norm(propIngreso)); // destina una parte alta del ingreso a pagar deudas
+        const oiB = isSi(g(r, C.disminuyoComida)); // redujo comidas en el último año
+        const oiC = redujo.has("alimentacion"); // marcó alimentación entre los recortes para poder pagar
+        const overIndebted = tieneDeuda && (oiA || oiB || oiC);
         return {
           idx: ri,
           provincia: (g(r, C.provincia) || "").toString().trim() || "Sin dato",
@@ -642,7 +657,7 @@
           ingJ,
           ingO,
           ingTotal,
-          montos: Object.fromEntries(Object.entries(C.montos).map(([k, i]) => [k, num(g(r, i))])),
+          montos: Object.fromEntries(Object.entries(C.montos).map(([k, i]) => [k, num99(g(r, i))])),
           gastosTop,
           consent: isSi(g(r, C.consent)),
           declinedConsent: norm(g(r, C.consent)) === "no",
@@ -668,7 +683,7 @@
           disminuyoComida: isSi(g(r, C.disminuyoComida)),
           comedor: isSi(g(r, C.comedor)),
           preocupacion: (g(r, C.preocupacion) || "").toString().trim(),
-          overIndebted: oiA || oiB || oiC,
+          overIndebted,
           oiA,
           oiB,
           oiC,
@@ -865,6 +880,7 @@
           afect.add("animo");
         }
         const ingTotal = [350000, 450000, 600000, 900000, 1200000, 1800000][Math.floor(Math.random() * 6)];
+        const dismComida = Math.random() < 0.4;
         recs.push({
           idx: i,
           provincia: p,
@@ -921,12 +937,12 @@
           afectacionNivel: arrears ? pick(["Bastante", "Mucho", "Muchísimo"]) : pick(["Nada", "Un poco"]),
           refinancio: Math.random() < 0.25,
           situacion: pick(["Empeoró", "Empeoró", "Se mantuvo igual", "Mejoró"]),
-          disminuyoComida: Math.random() < 0.4,
+          disminuyoComida: dismComida,
           comedor: Math.random() < 0.25,
           preocupacion: "Endeudamiento",
-          overIndebted: ["entre 25% y 50%", "mas del 50%"].includes(norm(propV)) || ["con mucha dificultad", "no puede pagarlas"].includes(norm(capV)) || redujo.has("alimentacion"),
+          overIndebted: nd > 0 && (["entre 25% y 50%", "mas del 50%"].includes(norm(propV)) || dismComida || redujo.has("alimentacion")),
           oiA: ["entre 25% y 50%", "mas del 50%"].includes(norm(propV)),
-          oiB: ["con mucha dificultad", "no puede pagarlas"].includes(norm(capV)),
+          oiB: dismComida,
           oiC: redujo.has("alimentacion"),
           submittedAt: new Date(2026, 8, 1 + Math.floor(i / 7)),
           surveyor: pick(["encuestador1", "encuestador2", "encuestador3", "encuestador4"]),
@@ -2088,7 +2104,7 @@
         color: modalidadColor(d.key)
       }));
       // Volver al Trabajo — impacto de la discontinuación
-      // 1 persona = $70.000; 4 o más = 4 personas ($280.000).
+      // 1 persona = $78.000; 4 o más = 4 personas ($312.000).
       const volverPersonas = label => {
         const nl = norm(label);
         if (nl.includes("1 persona")) return 1;
@@ -2097,7 +2113,7 @@
         if (nl.includes("4 o mas") || nl.includes("4 o más") || nl.includes("4 personas") || nl.includes("mas de 4")) return 4;
         return 0;
       };
-      const VOLVER_MONTO = 70000;
+      const VOLVER_MONTO = 78000;
       const conVolver = data.filter(r => {
         const p = volverPersonas(r.volverTrabajo);
         return p > 0;
@@ -2106,8 +2122,9 @@
         const perdido = p * VOLVER_MONTO;
         // El ingreso actual ya NO incluye Volver (el programa se discontinuó).
         // "Ingreso previo" reconstruido = ingreso actual + monto perdido.
-        const ingresoPrevio = (r.ingTotal || 0) + perdido;
-        const pctPerdido = ingresoPrevio > 0 ? perdido / ingresoPrevio : NaN;
+        // Si el ingreso quedó desconocido (algún componente en 99), no se calcula el %.
+        const ingresoPrevio = isFinite(r.ingTotal) ? r.ingTotal + perdido : NaN;
+        const pctPerdido = isFinite(ingresoPrevio) && ingresoPrevio > 0 ? perdido / ingresoPrevio : NaN;
         return { r, personas: p, perdido, ingresoPrevio, pctPerdido };
       });
       const sinVolver = data.filter(r => volverPersonas(r.volverTrabajo) === 0);
@@ -2266,7 +2283,7 @@
             /*#__PURE__*/React.createElement("p", {
               style: { color: T.faint },
               className: "text-xs mt-0.5"
-            }, "Hogares donde al menos una persona cobraba el programa · $70.000 por persona (4 o más = $280.000)"))
+            }, "Hogares donde al menos una persona cobraba el programa · $78.000 por persona (4 o más = $312.000)"))
         ),
         /*#__PURE__*/React.createElement("div", {
           className: "grid grid-cols-2 md:grid-cols-4 gap-3 mb-4"
@@ -2389,18 +2406,18 @@
         c: T.clay
       }].filter(x => x.v > 0);
       const credLbl = {
-        banco: "Banco / crédito personal",
-        financiera: "Financiera",
-        fintech: "Fintech / billetera / app",
-        tarjeta_banco: "Tarjeta bancaria",
-        tarjeta_comercio: "Tarjeta de comercio",
-        cuotas_comercio: "Cuotas en comercio",
-        fiado: "Fiado en el barrio",
-        prestamista: "Prestamista (gota a gota)",
-        familiar: "Familiar / conocido",
-        cooperativa: "Cooperativa / mutual",
-        servicios: "Servicios vencidos",
-        alquiler: "Alquiler vencido",
+        banco: "Préstamo personal, o cualquier crédito bancario",
+        financiera: "Préstamo de financiera (Credil, Crédito Argentino u otras)",
+        fintech: "Préstamo por app o fintech (Mercado Pago/Crédito, Ualá, Naranja X, Personal Pay u otras)",
+        tarjeta_banco: "Saldo o cuotas de tarjeta de crédito bancaria (Visa, Mastercard u otras)",
+        tarjeta_comercio: "Crédito o tarjeta de comercio (Coppel, Tarjeta carrefour, Cencosud u otras)",
+        cuotas_comercio: "Compra en cuotas directamente en un comercio, sin tarjeta",
+        fiado: "Fiado o cuenta pendiente en almacén, súper u otro comercio del barrio",
+        prestamista: "Préstamo de prestamista particular o del barrio",
+        familiar: "Préstamo de familiar, amigo/a o conocido/a",
+        cooperativa: "Crédito de cooperativa, mutual, ONG o programa de microcrédito",
+        servicios: "Facturas de servicios vencidas o pendientes (luz, agua, gas, internet, teléfono/celular)",
+        alquiler: "Alquileres vencidos o pendientes de pago",
         otro: "Otro"
       };
       const credGroup = {
@@ -2581,7 +2598,7 @@
         color: "#6B5B95",
         bg: "#ECE7F1",
         icon: AlertTriangle,
-        def: "Cumple \u22651 de: destina \u226525% del ingreso a deuda \xB7 paga con mucha dificultad o no puede \xB7 redujo alimentaci\xF3n para pagar."
+        def: "Hogares con deuda vigente que cumplen \u22651 de: destinan 25% o m\xE1s del ingreso a pagar deudas \xB7 redujeron comidas en el \xFAltimo a\xF1o \xB7 marcaron alimentaci\xF3n entre los recortes para poder pagar."
       })), /*#__PURE__*/React.createElement("div", {
         className: "grid grid-cols-2 md:grid-cols-3 gap-3"
       }, /*#__PURE__*/React.createElement(KPI, {
