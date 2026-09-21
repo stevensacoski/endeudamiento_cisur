@@ -13,6 +13,8 @@
 <script crossorigin src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
 <script crossorigin src="https://unpkg.com/recharts@2.15.0/umd/Recharts.js"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   html, body, #root { height: 100%; }
   body { margin: 0; background: #F5F6F4; font-family: 'Inter', system-ui, sans-serif; }
@@ -20,6 +22,10 @@
   .fatal { max-width:560px; margin:0 auto; padding:24px; }
   .fatal h2 { color:#A83E2B; font-size:16px; margin:0 0 8px; }
   .fatal p { color:#5C6B6A; font-size:14px; line-height:1.55; margin:6px 0; }
+  /* Leaflet: evitar que el preflight de Tailwind rompa los tiles */
+  .leaflet-container { font-family:'Inter', system-ui, sans-serif; background:#F5F6F4; }
+  .leaflet-pane img, .leaflet-tile, .leaflet-container img { max-width:none !important; }
+  .leaflet-tooltip { font-size:12px; line-height:1.35; }
 </style>
 <script>
   function showFatal(e){
@@ -51,7 +57,8 @@
       useState,
       useMemo,
       useEffect,
-      useCallback
+      useCallback,
+      useRef
     } = React;
     const {
       AreaChart,
@@ -370,6 +377,12 @@
       const n = num(v);
       return n === 99 ? NaN : n;
     }
+    // Parseo simple de coordenadas (acepta coma decimal); valida rango aproximado de Argentina.
+    function flo(v) {
+      if (v == null || v === "") return NaN;
+      const n = parseFloat(String(v).trim().replace(",", "."));
+      return isFinite(n) ? n : NaN;
+    }
     function median(arr) {
       const a = arr.filter(x => isFinite(x)).sort((x, y) => x - y);
       if (!a.length) return NaN;
@@ -452,6 +465,13 @@
         otro: findExact("Otro")
       };
       C.nSi = findExact("n_si");
+      // Coordenadas: pregunta "ubicación gps" (preferida) y geopoint automático al iniciar (respaldo)
+      C.geo = {
+        gpsLat: find("ubicacion gps", "latitude"),
+        gpsLon: find("ubicacion gps", "longitude"),
+        startLat: find("geopoint", "latitude"),
+        startLon: find("geopoint", "longitude")
+      };
       // "¿cómo estás pagando el resumen de la tarjeta?" se repite hasta 3 veces (una por bloque de deuda)
       C.pagoTarjetaBlocks = findAll("resumen de la tarjeta");
       // debt detail blocks — anchor + fixed offsets
@@ -622,6 +642,14 @@
         const moraCount = debts.filter(d => isMora(d.alDia)).length;
         const creditorsCount = Object.entries(creditors).filter(([k, v]) => k !== "otro" && v).length;
         const declaraDeuda = isSi(g(r, C.tieneDeuda));
+        // Coordenadas: preferir la pregunta de ubicación; si no, el geopoint de inicio.
+        let lat = flo(g(r, C.geo.gpsLat)),
+          lon = flo(g(r, C.geo.gpsLon));
+        if (!(isFinite(lat) && isFinite(lon) && (lat !== 0 || lon !== 0))) {
+          lat = flo(g(r, C.geo.startLat));
+          lon = flo(g(r, C.geo.startLon));
+        }
+        const hasGeo = isFinite(lat) && isFinite(lon) && lat < -20 && lat > -56 && lon < -52 && lon > -74;
         const atribucion = optSet(r, C.atribucion),
           redujo = optSet(r, C.redujo),
           coercion = optSet(r, C.coercion),
@@ -690,6 +718,8 @@
           submittedAt: parseGvizDate(g(r, C.submitted)),
           surveyor: (g(r, C.surveyor) || "").toString().trim() || "Sin dato",
           uuid: (g(r, C.uuid) || "").toString().trim(),
+          lat: hasGeo ? lat : NaN,
+          lon: hasGeo ? lon : NaN,
           trabajos: []
         };
       });
@@ -823,7 +853,7 @@
 
     /* ─────────────────  SYNTHETIC DEMO DATA  ───────────────── */
     function makeDemo() {
-      const geo = [["Buenos Aires", "La Matanza", "Rafael Castillo", "Cuatro de Agosto (RENABAP 6286)"], ["Buenos Aires", "La Matanza", "Rafael Castillo", "Dieciséis de Febrero (RENABAP 6285)"], ["Buenos Aires", "General San Martín", "Loma Hermosa", "Costa Esperanza (RENABAP 625)"], ["Misiones", "Capital", "Posadas", "Chacra 158 (RENABAP 2001)"], ["Misiones", "Capital", "Garupá", "Guadalupe (RENABAP 2063)"], ["Santa Fe", "Rosario", "Rosario", "Nuevo Alberdi (RENABAP 3110)"]];
+      const geo = [["Buenos Aires", "La Matanza", "Rafael Castillo", "Cuatro de Agosto (RENABAP 6286)", -34.70, -58.63], ["Buenos Aires", "La Matanza", "Rafael Castillo", "Dieciséis de Febrero (RENABAP 6285)", -34.71, -58.64], ["Buenos Aires", "General San Martín", "Loma Hermosa", "Costa Esperanza (RENABAP 625)", -34.55, -58.55], ["Misiones", "Capital", "Posadas", "Chacra 158 (RENABAP 2001)", -27.40, -55.95], ["Misiones", "Capital", "Garupá", "Guadalupe (RENABAP 2063)", -27.48, -55.83], ["Santa Fe", "Rosario", "Rosario", "Nuevo Alberdi (RENABAP 3110)", -32.90, -60.72]];
       const pick = a => a[Math.floor(Math.random() * a.length)];
       const bcra = ["Está al día / no tiene atraso", "Está al día / no tiene atraso", "Hasta 31 días de atraso", "Más de 31 y hasta 90 días", "Más de 90 y hasta 180 días", "Más de 180 días y hasta 1 año"];
       const acreedores = ["Préstamo por app o fintech (Mercado Pago/Crédito, Ualá, Naranja X, Personal Pay u otras)", "Saldo o cuotas de tarjeta de crédito bancaria (Visa, Mastercard u otras)", "Préstamo de prestamista particular o del barrio", "Préstamo de familiar, amigo/a o conocido/a", "Fiado o cuenta pendiente en almacén, súper u otro comercio del barrio", "Préstamo de financiera (Credil, Crédito Argentino u otras)"];
@@ -832,7 +862,9 @@
       const tarjetaPagoOpts = ["Pagando el total del resumen", "Pagando solo el pago mínimo", "No estoy pagando el resumen"];
       const recs = [];
       for (let i = 0; i < 52; i++) {
-        const [p, d, l, b] = pick(geo);
+        const [p, d, l, b, glat, glon] = pick(geo);
+        const demoLat = glat + (Math.random() - 0.5) * 0.02;
+        const demoLon = glon + (Math.random() - 0.5) * 0.02;
         const nd = Math.random() < 0.72 ? 1 + Math.floor(Math.random() * 3) : 0;
         const debts = Array.from({
           length: nd
@@ -947,6 +979,8 @@
           submittedAt: new Date(2026, 8, 1 + Math.floor(i / 7)),
           surveyor: pick(["encuestador1", "encuestador2", "encuestador3", "encuestador4"]),
           uuid: "demo-" + i,
+          lat: demoLat,
+          lon: demoLon,
           trabajos: (function () {
             const modOpts = ["Informal (en negro)", "Formal (en blanco)", "Independiente", "Trabajo a través de aplicaciones", "Trabajo en cooperativa"];
             const nT = Math.random() < 0.55 ? 1 : Math.random() < 0.8 ? 2 : 3;
@@ -1227,6 +1261,8 @@
         data: data
       }) : tab === "deuda" ? /*#__PURE__*/React.createElement(Deuda, {
         data: data
+      }) : tab === "mapa" ? /*#__PURE__*/React.createElement(MapaTab, {
+        data: data
       }) : /*#__PURE__*/React.createElement(Vulnerabilidad, {
         data: data
       })), /*#__PURE__*/React.createElement("footer", {
@@ -1488,7 +1524,7 @@
       tab,
       setTab
     }) {
-      const items = [["avance", "Avance de campo", MapPin], ["alerta", "Alerta encuesta", AlertTriangle], ["hogares", "Perfil de hogares", Users], ["trabajo", "Trabajo", HandCoins], ["deuda", "Endeudamiento", Wallet], ["vuln", "Vulnerabilidad e impacto", ShieldAlert]];
+      const items = [["avance", "Avance de campo", MapPin], ["alerta", "Alerta encuesta", AlertTriangle], ["hogares", "Perfil de hogares", Users], ["trabajo", "Trabajo", HandCoins], ["deuda", "Endeudamiento", Wallet], ["mapa", "Mapa", MapPin], ["vuln", "Vulnerabilidad e impacto", ShieldAlert]];
       return /*#__PURE__*/React.createElement("div", {
         className: "max-w-6xl mx-auto px-3 sm:px-5 pt-3"
       }, /*#__PURE__*/React.createElement("div", {
@@ -2559,6 +2595,47 @@
       const motivosTodos = countBy(todosMotivosFlat, x => x).map(x => ({
         label: x.key, value: x.n, color: motivoColor(x.key)
       }));
+      // ── Situación por DEUDA (no por hogar), agrupada en 3 sectores ──
+      // A nivel deuda: cada deuda cuenta con su propia situación BCRA.
+      // Si un hogar tiene 3 deudas y solo 1 en mora, aquí esa 1 suma a "mora" y las otras 2 a lo suyo.
+      const debtSector = tipo => {
+        const t = norm(tipo);
+        if (t.includes("prestamo personal") || t.includes("tarjeta de credito bancaria")) return "bancaria";
+        if (t.includes("app o fintech") || t.includes("cuotas directamente") || t.includes("tarjeta de comercio") || t.includes("prestamo de financiera") || t.includes("credito de cooperativa") || t.includes("facturas de servicios")) return "noBancaria";
+        if (t.includes("fiado") || t.includes("prestamista particular") || t.includes("prestamo de familiar")) return "informal";
+        return null; // "Otro" u opción no reconocida: no entra en ningún sector
+      };
+      const debtSit = alDia => {
+        const nn = norm(alDia);
+        if (nn === "") return null; // sin dato: la deuda no tiene situación declarada, se excluye
+        if (isMora(alDia)) return "mora";
+        if (nn.includes("al dia")) return "aldia";
+        if (nn.includes("no sabe") || nn.includes("no recuerda")) return "nosabe";
+        if (isBcraBucket(alDia)) return "atraso"; // bucket BCRA reconocido, no al día y no en mora (hasta 31 / 31–90)
+        return null; // cualquier otro valor no reconocido: se excluye
+      };
+      const sectorSit = {
+        bancaria: { aldia: 0, atraso: 0, mora: 0, nosabe: 0 },
+        noBancaria: { aldia: 0, atraso: 0, mora: 0, nosabe: 0 },
+        informal: { aldia: 0, atraso: 0, mora: 0, nosabe: 0 }
+      };
+      data.forEach(r => r.debts.forEach(d => {
+        const sec = debtSector(d.tipo);
+        if (!sec) return;
+        const st = debtSit(d.alDia);
+        if (!st) return; // excluye deudas sin situación declarada (celda vacía / valor no reconocido)
+        sectorSit[sec][st]++;
+      }));
+      const sitDonut = s => {
+        const o = sectorSit[s];
+        return [
+          { name: "Al día", v: o.aldia, c: T.petrol },
+          { name: "Atrasado", v: o.atraso, c: T.amber },
+          { name: "En mora", v: o.mora, c: T.clay },
+          { name: "No sabe", v: o.nosabe, c: T.faint }
+        ].filter(x => x.v > 0);
+      };
+      const sitTotal = s => { const o = sectorSit[s]; return o.aldia + o.atraso + o.mora + o.nosabe; };
       return /*#__PURE__*/React.createElement("div", {
         className: "mt-4 space-y-4"
       }, /*#__PURE__*/React.createElement("div", {
@@ -2742,7 +2819,27 @@
         items: refinancio,
         showPct: true,
         denom: nD
-      }))));
+      }))), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-3 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
+        title: "Situaci\xF3n por deuda \xB7 bancaria",
+        hint: `Sobre ${fmtInt(sitTotal("bancaria"))} deudas con situaci\xF3n declarada \xB7 pr\xE9stamo/cr\xE9dito bancario y tarjeta bancaria`,
+        icon: Building2
+      }, sitTotal("bancaria") ? /*#__PURE__*/React.createElement(Donut, {
+        data: sitDonut("bancaria"), fmt: fmtInt, suffix: " deudas"
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "Situaci\xF3n por deuda \xB7 no bancaria formal",
+        hint: `Sobre ${fmtInt(sitTotal("noBancaria"))} deudas con situaci\xF3n declarada \xB7 fintech, financiera, comercio, cooperativa/microcr\xE9dito y servicios`,
+        icon: Layers
+      }, sitTotal("noBancaria") ? /*#__PURE__*/React.createElement(Donut, {
+        data: sitDonut("noBancaria"), fmt: fmtInt, suffix: " deudas"
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+        title: "Situaci\xF3n por deuda \xB7 informal",
+        hint: `Sobre ${fmtInt(sitTotal("informal"))} deudas con situaci\xF3n declarada \xB7 fiado, prestamista y familiar/conocido`,
+        icon: HandCoins
+      }, sitTotal("informal") ? /*#__PURE__*/React.createElement(Donut, {
+        data: sitDonut("informal"), fmt: fmtInt, suffix: " deudas"
+      }) : /*#__PURE__*/React.createElement(Empty, null))));
     }
 
     /* ─────────────────  TAB: VULNERABILIDAD  ───────────────── */
@@ -2923,6 +3020,236 @@
         showPct: true,
         denom: n
       })));
+    }
+
+    /* ─────────────────  TAB: MAPA  ───────────────── */
+    const PROV_CENTROIDS = {
+      "buenos aires": [-36.5, -60.0],
+      "ciudad autonoma de buenos aires": [-34.61, -58.44],
+      "catamarca": [-27.3, -66.9],
+      "chaco": [-26.4, -60.5],
+      "chubut": [-43.8, -68.5],
+      "cordoba": [-32.1, -63.8],
+      "corrientes": [-28.8, -57.8],
+      "entre rios": [-32.0, -59.2],
+      "formosa": [-24.9, -59.9],
+      "jujuy": [-23.3, -65.7],
+      "la pampa": [-37.1, -66.0],
+      "la rioja": [-29.7, -67.2],
+      "mendoza": [-34.6, -68.5],
+      "misiones": [-26.9, -54.6],
+      "neuquen": [-38.7, -70.0],
+      "rio negro": [-40.0, -67.0],
+      "salta": [-24.8, -64.9],
+      "san juan": [-30.9, -68.9],
+      "san luis": [-33.7, -66.0],
+      "santa cruz": [-49.3, -70.0],
+      "santa fe": [-31.0, -60.9],
+      "santiago del estero": [-27.8, -63.3],
+      "tierra del fuego": [-54.0, -68.0],
+      "tucuman": [-26.9, -65.2]
+    };
+    function heatColor(t) {
+      if (!isFinite(t)) return "#B7BEB9";
+      t = Math.max(0, Math.min(1, t));
+      const stops = [[0, [110, 139, 78]], [0.5, [197, 138, 46]], [1, [168, 62, 43]]];
+      let a = stops[0], b = stops[stops.length - 1];
+      for (let i = 0; i < stops.length - 1; i++) {
+        if (t >= stops[i][0] && t <= stops[i + 1][0]) { a = stops[i]; b = stops[i + 1]; break; }
+      }
+      const span = b[0] - a[0] || 1;
+      const f = (t - a[0]) / span;
+      const c = k => Math.round(a[1][k] + (b[1][k] - a[1][k]) * f);
+      return `rgb(${c(0)},${c(1)},${c(2)})`;
+    }
+    function escapeHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+    }
+    function markerRadius(n) { return Math.min(30, 6 + 4 * Math.sqrt(n)); }
+    // Basemap claro SIN API key. CARTO ahora exige clave y devuelve un tile
+    // "API key required" que se repite y tapa el mapa; usamos Esri Light Gray.
+    function addBasemap(map) {
+      return window.L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+        maxZoom: 16, attribution: "Tiles \u00A9 Esri \u2014 Esri, DeLorme, NAVTEQ"
+      }).addTo(map);
+    }
+    function MapaTab({ data }) {
+      const h = React.createElement;
+      const MINN = 4;
+      const VARS = {
+        sobre: { label: "Sobreendeudamiento", denom: "todos", num: r => r.overIndebted },
+        deuda: { label: "Endeudamiento", denom: "todos", num: r => r.tieneDeuda },
+        mora: { label: "Mora (90+ días)", denom: "deuda", num: r => r.inMora },
+        cobranza: { label: "Cobranza coercitiva", denom: "todos", num: r => [...r.coercion].some(k => k !== "sin_presion" && k !== "prefiere_no") },
+        alim: { label: "Inseguridad alimentaria", denom: "todos", num: r => r.disminuyoComida || r.comedor }
+      };
+      const [variable, setVariable] = useState("sobre");
+      const mapEl = useRef(null), mapObj = useRef(null), layer = useRef(null);
+      const locEl = useRef(null), locObj = useRef(null), locLay = useRef(null);
+      const hasL = typeof window !== "undefined" && !!window.L;
+
+      const puntos = useMemo(() => {
+        const groups = {};
+        data.forEach(r => {
+          const key = r.provincia + "§" + r.barrio;
+          (groups[key] || (groups[key] = { prov: r.provincia, barrio: r.barrio, rows: [] })).rows.push(r);
+        });
+        return Object.values(groups).map(gp => {
+          const pts = gp.rows.filter(r => isFinite(r.lat) && isFinite(r.lon));
+          let lat = NaN, lon = NaN, approx = false;
+          if (pts.length) { lat = mean(pts.map(r => r.lat)); lon = mean(pts.map(r => r.lon)); }
+          else { const c = PROV_CENTROIDS[norm(gp.prov)]; if (c) { lat = c[0]; lon = c[1]; approx = true; } }
+          return { prov: gp.prov, barrio: gp.barrio, rows: gp.rows, n: gp.rows.length, lat, lon, approx, geoloc: pts.length };
+        }).filter(p => isFinite(p.lat) && isFinite(p.lon));
+      }, [data]);
+
+      const withStats = useMemo(() => {
+        const V = VARS[variable];
+        return puntos.map(p => {
+          const denomRows = V.denom === "deuda" ? p.rows.filter(r => r.tieneDeuda) : p.rows;
+          const den = denomRows.length;
+          const numv = denomRows.filter(V.num).length;
+          const rate = den > 0 ? numv / den : NaN;
+          return Object.assign({}, p, { den, numv, rate, small: den < MINN });
+        });
+      }, [puntos, variable]);
+
+      useEffect(() => {
+        if (!hasL || !mapEl.current || mapObj.current) return;
+        const map = window.L.map(mapEl.current, { scrollWheelZoom: true, zoomControl: true }).setView([-38, -63], 4);
+        addBasemap(map);
+        layer.current = window.L.layerGroup().addTo(map);
+        mapObj.current = map;
+        setTimeout(() => map.invalidateSize(), 120);
+        return () => { map.remove(); mapObj.current = null; layer.current = null; };
+      }, [hasL]);
+
+      useEffect(() => {
+        const map = mapObj.current, lay = layer.current;
+        if (!map || !lay) return;
+        lay.clearLayers();
+        const pts = [];
+        withStats.forEach(p => {
+          const col = p.small ? "#B7BEB9" : heatColor(p.rate);
+          const pctTxt = isFinite(p.rate) ? Math.round(p.rate * 100) + "%" : "—";
+          const cm = window.L.circleMarker([p.lat, p.lon], {
+            radius: markerRadius(p.n), color: "#ffffff", weight: 1.5, fillColor: col, fillOpacity: 0.82
+          });
+          cm.bindTooltip(
+            "<b>" + escapeHtml(p.barrio) + "</b><br>" + escapeHtml(p.prov) +
+            "<br>" + p.n + " encuesta" + (p.n !== 1 ? "s" : "") +
+            "<br>" + escapeHtml(VARS[variable].label) + ": " + p.numv + "/" + p.den + " (" + pctTxt + ")" +
+            (p.small ? "<br><i>muestra chica (n&lt;" + MINN + ")</i>" : "") +
+            (p.approx ? "<br><i>ubicación aproximada (provincia)</i>" : ""),
+            { direction: "top", opacity: 0.96 }
+          );
+          cm.addTo(lay);
+          pts.push([p.lat, p.lon]);
+        });
+        if (pts.length) { try { map.fitBounds(pts, { padding: [40, 40], maxZoom: 11 }); } catch (e) {} }
+        setTimeout(() => map.invalidateSize(), 60);
+      }, [withStats, variable, hasL]);
+
+      // Mapa locator: un punto por barrio, tamaño uniforme, solo para mostrar dónde se relevó.
+      useEffect(() => {
+        if (!hasL || !locEl.current || locObj.current) return;
+        const map = window.L.map(locEl.current, { scrollWheelZoom: true, zoomControl: true }).setView([-38, -63], 4);
+        addBasemap(map);
+        locLay.current = window.L.layerGroup().addTo(map);
+        locObj.current = map;
+        setTimeout(() => map.invalidateSize(), 120);
+        return () => { map.remove(); locObj.current = null; locLay.current = null; };
+      }, [hasL]);
+
+      useEffect(() => {
+        const map = locObj.current, lay = locLay.current;
+        if (!map || !lay) return;
+        lay.clearLayers();
+        const pts = [];
+        puntos.forEach(p => {
+          const cm = window.L.circleMarker([p.lat, p.lon], {
+            radius: 6, color: "#ffffff", weight: 1.5, fillColor: T.petrol, fillOpacity: 0.85
+          });
+          cm.bindTooltip(
+            "<b>" + escapeHtml(p.barrio) + "</b><br>" + escapeHtml(p.prov) +
+            "<br>" + p.n + " encuesta" + (p.n !== 1 ? "s" : "") +
+            (p.approx ? "<br><i>ubicación aproximada (provincia)</i>" : ""),
+            { direction: "top", opacity: 0.96 }
+          );
+          cm.addTo(lay);
+          pts.push([p.lat, p.lon]);
+        });
+        if (pts.length) { try { map.fitBounds(pts, { padding: [40, 40], maxZoom: 11 }); } catch (e) {} }
+        setTimeout(() => map.invalidateSize(), 60);
+      }, [puntos, hasL]);
+
+      const totalN = data.length;
+      const conGPS = data.filter(r => isFinite(r.lat) && isFinite(r.lon)).length;
+      const nColor = withStats.filter(p => !p.small).length;
+      const nGris = withStats.length - nColor;
+
+      const btn = k => h("button", {
+        key: k, onClick: () => setVariable(k),
+        style: {
+          background: variable === k ? T.ink : "transparent",
+          color: variable === k ? "#fff" : T.muted,
+          border: "1px solid " + (variable === k ? T.ink : T.line)
+        },
+        className: "text-xs font-medium px-3 py-1.5 rounded-lg whitespace-nowrap"
+      }, VARS[k].label);
+
+      return h("div", { className: "mt-4 space-y-4" },
+        h("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-3" },
+          h(KPI, { label: "Barrios en el mapa", value: fmtInt(withStats.length), color: T.petrol, icon: MapPin }),
+          h(KPI, { label: "Encuestas con GPS propio", value: fmtInt(conGPS), sub: "de " + fmtInt(totalN) + " en la selección", color: T.indigo, icon: MapPin }),
+          h(KPI, { label: "Barrios con color de tasa", value: fmtInt(nColor), sub: "n ≥ " + MINN + " en el denominador", color: T.olive }),
+          h(KPI, { label: "Barrios en gris", value: fmtInt(nGris), sub: "muestra chica, sin tasa", color: T.faint })
+        ),
+        h(Section, {
+          title: "Mapa por barrio", icon: MapPin,
+          hint: "Cada burbuja es un barrio · tamaño = encuestas · color = " + VARS[variable].label.toLowerCase()
+        },
+          h("div", { className: "flex flex-wrap gap-1.5 mb-3" }, Object.keys(VARS).map(btn)),
+          !hasL
+            ? h("div", { style: { color: T.faint }, className: "text-xs italic py-10 text-center" }, "No se pudo cargar la librería de mapas (revisá la conexión a internet).")
+            : h("div", { ref: mapEl, style: { height: 540, width: "100%", borderRadius: 12, overflow: "hidden", border: "1px solid " + T.line, zIndex: 0 } }),
+          h(MapLegend, { variable: VARS[variable].label, minN: MINN })
+        ),
+        h(Section, {
+          title: "Barrios relevados", icon: MapPin,
+          hint: "Un punto por barrio, tamaño uniforme · muestra dónde se hicieron las encuestas (respeta los filtros)"
+        },
+          !hasL
+            ? h("div", { style: { color: T.faint }, className: "text-xs italic py-10 text-center" }, "No se pudo cargar la librería de mapas (revisá la conexión a internet).")
+            : h("div", { ref: locEl, style: { height: 480, width: "100%", borderRadius: 12, overflow: "hidden", border: "1px solid " + T.line, zIndex: 0 } }),
+          h("p", { style: { color: T.faint }, className: "text-xs mt-3" }, fmtInt(puntos.length) + " barrios en la selección · los barrios sin GPS propio se ubican en el centroide de su provincia (marcados como aproximados)")
+        )
+      );
+    }
+    function MapLegend({ variable, minN }) {
+      const h = React.createElement;
+      const grad = "linear-gradient(90deg, " + heatColor(0) + ", " + heatColor(0.5) + ", " + heatColor(1) + ")";
+      return h("div", { className: "flex flex-col sm:flex-row sm:items-end gap-5 mt-3" },
+        h("div", { className: "flex-1 min-w-0" },
+          h("div", { style: { color: T.faint }, className: "text-xs mb-1" }, variable + " (% del denominador)"),
+          h("div", { style: { height: 10, borderRadius: 6, background: grad } }),
+          h("div", { className: "flex justify-between mt-1" },
+            h("span", { style: { color: T.muted }, className: "text-xs" }, "0%"),
+            h("span", { style: { color: T.muted }, className: "text-xs" }, "50%"),
+            h("span", { style: { color: T.muted }, className: "text-xs" }, "100%"))
+        ),
+        h("div", { className: "flex items-end gap-3" },
+          [5, 15, 30].map(nn => {
+            const s = Math.round(markerRadius(nn));
+            return h("div", { key: nn, className: "flex flex-col items-center gap-1" },
+              h("span", { style: { width: s, height: s, borderRadius: "9999px", background: T.indigoSoft, border: "1.5px solid " + T.indigo, display: "inline-block" } }),
+              h("span", { style: { color: T.muted }, className: "text-xs" }, nn));
+          }),
+          h("div", { className: "flex flex-col items-center gap-1" },
+            h("span", { style: { width: 18, height: 18, borderRadius: "9999px", background: "#B7BEB9", border: "1.5px solid #9AA0A6", display: "inline-block" } }),
+            h("span", { style: { color: T.muted }, className: "text-xs" }, "n<" + minN))
+        )
+      );
     }
 
     /* ─────────────────  SHARED WIDGETS  ───────────────── */
