@@ -428,6 +428,7 @@
         horasAportante: find("cuantas horas trabaja"),
         diasAportante: find("cuantos dias de la semana"),
         volverTrabajo: find("cobraba el programa volver"),
+        motivoNoTrabaja: find("principal motivo por el que actualmente no trabaja"),
         ingTrabajo: find("total de los ingresos producto del trabajo"),
         ingProgramas: find("por programas sociales"),
         ingJubil: find("jubilaciones"),
@@ -679,6 +680,7 @@
           horasAportante: num(g(r, C.horasAportante)),
           diasAportante: num(g(r, C.diasAportante)),
           volverTrabajo: (g(r, C.volverTrabajo) || "").toString().trim(),
+          motivoNoTrabaja: (g(r, C.motivoNoTrabaja) || "").toString().trim(),
           nSi: num(g(r, C.nSi)),
           ingT,
           ingP,
@@ -2109,6 +2111,31 @@
       const conDato = data.filter(r => r.volverTrabajo);
       const volverOrder = ["Nadie", "1 persona", "2 personas", "3 personas", "4 o más"];
       const volver = ordered(countBy(conDato, r => r.volverTrabajo), volverOrder);
+      // Motivo por el que el aportante principal no trabaja (pregunta con salto: solo quienes no trabajan)
+      const motivoNoTrabOrder = ["Busca trabajo y no encuentra", "Pensionado/a o jubilado/a", "Realiza tareas en el hogar (sin sueldo, ama de casa)"];
+      const noTrabLbl = {
+        "Pensionado/a o jubilado/a": "Jubilado/a o pensionado/a",
+        "Busca trabajo y no encuentra": "Busca y no encuentra",
+        "Realiza tareas en el hogar (sin sueldo, ama de casa)": "Tareas del hogar (no remunerado)"
+      };
+      const noTrabColor = k => {
+        const nl = norm(k);
+        if (nl.includes("busca")) return T.clay;
+        if (nl.includes("jubil") || nl.includes("pension")) return T.faint;
+        if (nl.includes("hogar") || nl.includes("ama de casa")) return T.amber;
+        return T.indigo;
+      };
+      const motivoNoTrab = ordered(countBy(data.filter(r => r.motivoNoTrabaja), r => r.motivoNoTrabaja), motivoNoTrabOrder)
+        .filter(d => d.key && d.key !== "Sin dato")
+        .map(d => ({ label: noTrabLbl[d.key] || d.key, value: d.n, color: noTrabColor(d.key) }));
+      const nNoTrab = motivoNoTrab.reduce((s, x) => s + x.value, 0);
+      const motivoNoTrabSectionEl = /*#__PURE__*/React.createElement(Section, {
+        title: "Motivo por el que no trabaja",
+        hint: `Aportante principal que no trabaja \xB7 ${fmtInt(nNoTrab)} casos`,
+        icon: HandCoins
+      }, motivoNoTrab.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: motivoNoTrab, showPct: true, denom: nNoTrab
+      }) : /*#__PURE__*/React.createElement(Empty, null));
       // Modalidad de trabajos (repeat group "trabajos")
       const trabajosFlat = [];
       const hogaresConTrabajos = new Set();
@@ -2215,7 +2242,9 @@
         sub: "aportante principal",
         color: T.olive,
         icon: Activity
-      })), /*#__PURE__*/React.createElement(Section, {
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
         title: "Tasa de ocupaci\xF3n de personas adultas",
         hint: "Integrantes que trabajaron la \xFAltima semana sobre el total de adultos de la selecci\xF3n",
         icon: HandCoins
@@ -2231,7 +2260,7 @@
         }],
         showPct: true,
         denom: adultosTot
-      })), /*#__PURE__*/React.createElement(Section, {
+      })), motivoNoTrabSectionEl), /*#__PURE__*/React.createElement(Section, {
         title: "Modalidad de los trabajos declarados",
         hint: `Sobre ${fmtInt(trabajosFlat.length)} trabajos de ${fmtInt(hogaresConTrabajos.size)} hogares con detalle (hasta 3 por hogar)`,
         icon: Layers
@@ -2430,6 +2459,23 @@
       const deudasHogar = conDeuda.map(totalDeudaHogar).filter(x => x > 0);
       const deudaProm = mean(deudasHogar);
       const deudaMediana = median(deudasHogar);
+      // Distribución de cantidad de acreedores por hogar (n_si; respaldo: creditorsCount)
+      const credCount = r => (isFinite(r.nSi) && r.nSi > 0) ? Math.round(r.nSi) : r.creditorsCount;
+      const acreedNums = conDeuda.map(credCount).filter(x => x > 0);
+      const acreedDist = [
+        { label: "1 acreedor", value: acreedNums.filter(x => x === 1).length, color: T.petrol },
+        { label: "2 acreedores", value: acreedNums.filter(x => x === 2).length, color: T.indigo },
+        { label: "3 acreedores", value: acreedNums.filter(x => x === 3).length, color: T.amber },
+        { label: "4 acreedores", value: acreedNums.filter(x => x === 4).length, color: "#C25B3A" },
+        { label: "5 o m\xE1s", value: acreedNums.filter(x => x >= 5).length, color: T.clay }
+      ].filter(x => x.value > 0);
+      const acreedDistSectionEl = /*#__PURE__*/React.createElement(Section, {
+        title: "Cantidad de acreedores por hogar",
+        hint: `Entre ${fmtInt(acreedNums.length)} hogares endeudados \xB7 promedio ${fmtDec(acreedProm, 1)}`,
+        icon: HandCoins
+      }, acreedDist.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: acreedDist, showPct: true, denom: acreedNums.length
+      }) : /*#__PURE__*/React.createElement(Empty, null));
       const estadoDeuda = [{
         name: "Al día",
         v: alDiaHog,
@@ -2736,7 +2782,7 @@
         items: cred,
         showPct: true,
         denom: n
-      })), /*#__PURE__*/React.createElement(Section, {
+      })), acreedDistSectionEl, /*#__PURE__*/React.createElement(Section, {
         title: "Se\xF1ales de alerta",
         hint: "Motores emergentes de endeudamiento",
         icon: AlertTriangle
@@ -2857,6 +2903,12 @@
       const n = data.length;
       const conDeuda = data.filter(r => r.tieneDeuda);
       const nD = conDeuda.length;
+      // Filtro del gráfico de ajustes: "deuda para comer" = algún crédito con motivo alimentación.
+      const [ajusteFiltro, setAjusteFiltro] = useState("todos");
+      const deudaParaComer = r => r.debts.some(d => norm(d.motivo).includes("alimentacion"));
+      const ajusteBase = ajusteFiltro === "comer" ? data.filter(deudaParaComer)
+        : ajusteFiltro === "otro" ? data.filter(r => r.tieneDeuda && !deudaParaComer(r))
+        : data;
       const propOrder = ["Menos del 10%", "Entre 10% y 25%", "Entre 25% y 50%", "Más del 50%", "No sabe"];
       const propIng = ordered(countBy(conDeuda.filter(r => r.propIngreso), r => r.propIngreso), propOrder).map(d => ({
         label: d.key,
@@ -2919,7 +2971,7 @@
       };
       const red = Object.keys(redLbl).map(k => ({
         label: redLbl[k],
-        value: data.filter(r => r.redujo.has(k)).length,
+        value: ajusteBase.filter(r => r.redujo.has(k)).length,
         color: k === "alimentacion" || k === "salud" ? T.clay : T.amber
       })).filter(x => x.value).sort((a, b) => b.value - a.value);
       const comida = data.filter(r => r.disminuyoComida).length;
@@ -2931,50 +2983,52 @@
         value: d.n,
         color: d.key === "Empeoró" ? T.clay : d.key === "Mejoró" ? T.olive : T.faint
       }));
-      // ── Esfuerzo para saldar la deuda ─────────────────────────────────
-      // Meses que tardaría un hogar en cancelar su deuda actual si destinara
-      // una parte fija de su ingreso a pagarla, sin contar intereses (piso optimista).
-      // Solo hogares endeudados con deuda e ingreso conocidos (regla del 99 ya aplicada).
+      // ── Margen para pagar después de comer ────────────────────────────
+      // ¿Cuánto le queda al hogar por encima de la canasta alimentaria para
+      // destinar a la deuda? Si no le queda nada, pagar la deuda sale de comer.
+      // Piso = CBA por integrante (editable, aprox. adulto equivalente) × personas.
+      // meses = deuda / excedente (destinando TODO el excedente, sin intereses).
+      // Solo hogares endeudados con deuda, ingreso y tamaño conocidos (regla del 99).
       const h = React.createElement;
-      const [esfShare, setEsfShare] = useState(0.25);
+      const [cbaPP, setCbaPP] = useState(181600);
       const deudaHogarV = r => r.debts.reduce((s, d) => s + (isFinite(d.debeHoy) ? d.debeHoy : 0), 0);
-      const ratioDeudaIng = conDeuda.map(r => {
-        const deuda = deudaHogarV(r), ing = r.ingTotal;
-        return (deuda > 0 && isFinite(ing) && ing > 0) ? deuda / ing : NaN;
-      }).filter(isFinite);
-      const esfMeses = ratioDeudaIng.map(x => x / esfShare);
-      const esfMediana = median(esfMeses);
-      const esfBig = isFinite(esfMediana) ? (esfMediana >= 24 ? fmtInt(esfMediana) : fmtDec(esfMediana, 1)) : "\u2014";
-      const esfAnios = isFinite(esfMediana) && esfMediana >= 12
-        ? "equivale a " + fmtDec(esfMediana / 12, 1) + " a\xF1os de esfuerzo sostenido" : null;
-      const esfBuckets = [
-        { label: "Hasta 6 meses", t: m => m <= 6, color: T.olive },
-        { label: "6 meses a 1 a\xF1o", t: m => m > 6 && m <= 12, color: T.amber },
-        { label: "1 a 2 a\xF1os", t: m => m > 12 && m <= 24, color: "#C25B3A" },
-        { label: "2 a 3 a\xF1os", t: m => m > 24 && m <= 36, color: T.clay },
-        { label: "M\xE1s de 3 a\xF1os", t: m => m > 36, color: "#7A2A1C" }
-      ].map(b => ({ label: b.label, value: esfMeses.filter(b.t).length, color: b.color }));
-      const esfBtn = s => h("button", {
-        key: s, onClick: () => setEsfShare(s),
-        style: {
-          background: esfShare === s ? T.ink : "transparent",
-          color: esfShare === s ? "#fff" : T.muted,
-          border: "1px solid " + (esfShare === s ? T.ink : T.line)
-        },
-        className: "text-xs font-medium px-2.5 py-1 rounded-lg"
-      }, Math.round(s * 100) + "%");
-      const esfSectionEl = h(Section, {
-        title: "Esfuerzo para saldar la deuda",
+      const margenBase = conDeuda.map(r => {
+        const deuda = deudaHogarV(r), ing = r.ingTotal, pers = r.personasHogar;
+        if (!(deuda > 0) || !(isFinite(ing) && ing > 0) || !(isFinite(pers) && pers > 0)) return null;
+        const excedente = ing - cbaPP * pers;
+        return { excedente, meses: excedente > 0 ? deuda / excedente : Infinity };
+      }).filter(Boolean);
+      const nMargen = margenBase.length;
+      const sinMargen = margenBase.filter(x => x.excedente <= 0).length;
+      const mesesMargen = margenBase.filter(x => x.excedente > 0).map(x => x.meses);
+      const pctSinMargen = nMargen ? Math.round(sinMargen / nMargen * 100) : 0;
+      const margenBuckets = [
+        { label: "Sin margen (paga saliendo de la comida)", value: sinMargen, color: "#7A2A1C" },
+        { label: "M\xE1s de 3 a\xF1os", value: mesesMargen.filter(m => m > 36).length, color: T.clay },
+        { label: "2 a 3 a\xF1os", value: mesesMargen.filter(m => m > 24 && m <= 36).length, color: "#C25B3A" },
+        { label: "1 a 2 a\xF1os", value: mesesMargen.filter(m => m > 12 && m <= 24).length, color: T.amber },
+        { label: "Hasta 1 a\xF1o", value: mesesMargen.filter(m => m <= 12).length, color: T.olive }
+      ].filter(x => x.value > 0);
+      const margenSectionEl = h(Section, {
+        title: "Margen para pagar despu\xE9s de comer",
         icon: Wallet,
-        hint: "Meses para cancelar la deuda si el hogar destinara " + Math.round(esfShare * 100) + "% del ingreso a pagarla \xB7 sin intereses \xB7 entre hogares endeudados con deuda e ingreso conocidos",
-        right: h("div", { className: "flex gap-1" }, [0.15, 0.25, 0.35].map(esfBtn))
-      }, esfMeses.length ? h("div", null,
+        hint: "Ingreso menos la canasta alimentaria del hogar (CBA \xD7 integrantes); lo que sobra es lo \xFAnico que puede ir a la deuda \xB7 " + fmtInt(nMargen) + " hogares con ingreso, deuda y tama\xF1o conocidos",
+        right: h("label", { className: "flex items-center gap-1 text-xs whitespace-nowrap", style: { color: T.muted } },
+          "CBA/persona $",
+          h("input", {
+            type: "number", value: cbaPP, min: 0, step: 1000,
+            onChange: e => setCbaPP(Math.max(0, Number(e.target.value) || 0)),
+            style: { width: "88px", border: "1px solid " + T.line, borderRadius: "6px", padding: "2px 6px", color: T.ink },
+            className: "text-xs"
+          })
+        )
+      }, nMargen ? h("div", null,
         h("div", { className: "flex items-end gap-2" },
-          h("span", { style: { color: T.clay, fontFamily: serif }, className: "text-4xl leading-none" }, esfBig),
-          h("span", { style: { color: T.muted }, className: "text-sm mb-1" }, "meses \xB7 hogar t\xEDpico")
+          h("span", { style: { color: "#7A2A1C", fontFamily: serif }, className: "text-4xl leading-none" }, pctSinMargen + "%"),
+          h("span", { style: { color: T.muted }, className: "text-sm mb-1" }, "no tiene un peso sobre la comida para pagar")
         ),
-        esfAnios ? h("p", { style: { color: T.faint }, className: "text-xs mt-1" }, esfAnios) : null,
-        h("div", { className: "mt-3" }, h(RankBars, { items: esfBuckets, showPct: true, denom: esfMeses.length }))
+        h("p", { style: { color: T.faint }, className: "text-xs mt-1" }, "para el resto, cu\xE1nto tardar\xEDa destinando todo el excedente sobre la canasta (sin intereses)"),
+        h("div", { className: "mt-3" }, h(RankBars, { items: margenBuckets, showPct: true, denom: nMargen }))
       ) : h(Empty, null));
       return /*#__PURE__*/React.createElement("div", {
         className: "mt-4 space-y-4"
@@ -3014,7 +3068,7 @@
         bg: T.claySoft,
         icon: Utensils,
         def: "Hogares que tuvieron que disminuir alguna comida diaria o que asisten a un comedor / reciben viandas \u2014 uni\xF3n de ambos, sin doble conteo."
-      }), esfSectionEl), /*#__PURE__*/React.createElement(Section, {
+      }), margenSectionEl), /*#__PURE__*/React.createElement(Section, {
         title: "Pr\xE1cticas de cobranza coercitiva",
         hint: "Desagregadas por tipo \xB7 rojo = pr\xE1cticas graves",
         icon: ShieldAlert
@@ -3042,13 +3096,22 @@
         denom: n
       }))), /*#__PURE__*/React.createElement(Section, {
         title: "Ajustes para poder pagar",
-        hint: "Qu\xE9 gastos redujeron o dejaron de pagar \xB7 rojo = alimentaci\xF3n y salud",
-        icon: TrendingDown
-      }, /*#__PURE__*/React.createElement(RankBars, {
+        hint: "Qu\xE9 gastos redujeron o dejaron de pagar \xB7 rojo = alimentaci\xF3n y salud \xB7 " + fmtInt(ajusteBase.length) + " hogares",
+        icon: TrendingDown,
+        right: h("div", { className: "flex flex-wrap gap-1" }, [["todos", "Todos"], ["comer", "Deuda para comer"], ["otro", "Otro motivo"]].map(([k, lbl]) => h("button", {
+          key: k, onClick: () => setAjusteFiltro(k),
+          style: {
+            background: ajusteFiltro === k ? T.ink : "transparent",
+            color: ajusteFiltro === k ? "#fff" : T.muted,
+            border: "1px solid " + (ajusteFiltro === k ? T.ink : T.line)
+          },
+          className: "text-xs font-medium px-2.5 py-1 rounded-lg"
+        }, lbl)))
+      }, red.length ? /*#__PURE__*/React.createElement(RankBars, {
         items: red,
         showPct: true,
-        denom: n
-      })), /*#__PURE__*/React.createElement("div", {
+        denom: ajusteBase.length
+      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement("div", {
         className: "grid md:grid-cols-2 gap-4"
       }, /*#__PURE__*/React.createElement(Section, {
         title: "Proporci\xF3n del ingreso destinada a pagar deudas",
