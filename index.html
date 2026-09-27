@@ -2928,7 +2928,10 @@
         : ajusteFiltro === "otro" ? data.filter(r => r.tieneDeuda && !deudaParaComer(r))
         : conDeuda;
       const propOrder = ["Menos del 10%", "Entre 10% y 25%", "Entre 25% y 50%", "Más del 50%", "No sabe"];
-      const propIng = ordered(countBy(conDeuda.filter(r => r.propIngreso), r => r.propIngreso), propOrder).map(d => ({
+      // "No está pagando" (corrección manual en planilla): se excluye del gráfico y del denominador.
+      const noPaga = r => norm(r.propIngreso).includes("no esta pagando");
+      const nNoPaga = conDeuda.filter(noPaga).length;
+      const propIng = ordered(countBy(conDeuda.filter(r => r.propIngreso && !noPaga(r)), r => r.propIngreso), propOrder).map(d => ({
         label: d.key,
         value: d.n,
         color: ["Entre 25% y 50%", "Más del 50%"].includes(d.key) ? T.clay : d.key === "No sabe" ? T.faint : T.amber
@@ -3135,12 +3138,12 @@
         className: "grid md:grid-cols-2 gap-4"
       }, /*#__PURE__*/React.createElement(Section, {
         title: "Proporci\xF3n del ingreso destinada a pagar deudas",
-        hint: "Entre hogares endeudados",
+        hint: "Entre hogares endeudados que est\xE1n pagando \xB7 excluye \u201CNo est\xE1 pagando\u201D",
         icon: Info
       }, propIng.length ? /*#__PURE__*/React.createElement(RankBars, {
         items: propIng,
         showPct: true,
-        denom: nD
+        denom: nD - nNoPaga
       }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
         title: "Capacidad de pago percibida",
         hint: "Entre hogares endeudados",
