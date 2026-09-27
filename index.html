@@ -1979,6 +1979,7 @@
       const ingMed = median(data.map(r => r.ingTotal).filter(x => x > 0));
       const perCap = median(data.map(r => r.personasHogar > 0 ? r.ingTotal / r.personasHogar : NaN));
       const hogarMed = median(data.map(r => r.personasHogar));
+      const hogarProm = mean(data.map(r => r.personasHogar));
       const comida = data.filter(r => r.disminuyoComida).length;
       const ingComp = [{
         name: "Trabajo / changas",
@@ -2031,8 +2032,8 @@
         value: fmtARS(perCap),
         color: T.indigo
       }), /*#__PURE__*/React.createElement(KPI, {
-        label: "Tama\xF1o del hogar (mediana)",
-        value: fmtInt(hogarMed),
+        label: "Tama\xF1o del hogar (promedio)",
+        value: fmtDec(hogarProm, 1),
         sub: "personas",
         color: T.olive,
         icon: Users
@@ -2108,6 +2109,21 @@
       const trabajosProm = mean(data.map(r => r.trabajosAportante));
       const horasProm = mean(data.map(r => r.horasAportante));
       const diasProm = mean(data.map(r => r.diasAportante));
+      // Intensidad horaria del aportante principal: horas semanales = días/semana × horas/día
+      const horasSemAport = data.map(r => (isFinite(r.diasAportante) && r.diasAportante > 0 && isFinite(r.horasAportante) && r.horasAportante > 0) ? r.diasAportante * r.horasAportante : NaN).filter(isFinite);
+      const nOcup = horasSemAport.length;
+      const ocupDist = [
+        { label: "Subocupado (menos de 35 h)", value: horasSemAport.filter(w => w < 35).length, color: T.amber },
+        { label: "Ocupado (35 a 45 h)", value: horasSemAport.filter(w => w >= 35 && w <= 45).length, color: T.olive },
+        { label: "Sobreocupado (m\xE1s de 45 h)", value: horasSemAport.filter(w => w > 45).length, color: T.clay }
+      ].filter(x => x.value > 0);
+      const ocupSectionEl = /*#__PURE__*/React.createElement(Section, {
+        title: "Intensidad horaria del aportante principal",
+        hint: `Horas semanales = d\xEDas \xD7 horas por d\xEDa \xB7 ${fmtInt(nOcup)} aportantes con dato`,
+        icon: Activity
+      }, ocupDist.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: ocupDist, showPct: true, denom: nOcup
+      }) : /*#__PURE__*/React.createElement(Empty, null));
       const conDato = data.filter(r => r.volverTrabajo);
       const volverOrder = ["Nadie", "1 persona", "2 personas", "3 personas", "4 o más"];
       const volver = ordered(countBy(conDato, r => r.volverTrabajo), volverOrder);
@@ -2260,7 +2276,9 @@
         }],
         showPct: true,
         denom: adultosTot
-      })), motivoNoTrabSectionEl), /*#__PURE__*/React.createElement(Section, {
+      })), motivoNoTrabSectionEl), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, /*#__PURE__*/React.createElement(Section, {
         title: "Modalidad de los trabajos declarados",
         hint: `Sobre ${fmtInt(trabajosFlat.length)} trabajos de ${fmtInt(hogaresConTrabajos.size)} hogares con detalle (hasta 3 por hogar)`,
         icon: Layers
@@ -2268,7 +2286,7 @@
         items: modalidad,
         showPct: true,
         denom: trabajosFlat.length
-      }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement(Section, {
+      }) : /*#__PURE__*/React.createElement(Empty, null)), ocupSectionEl), /*#__PURE__*/React.createElement(Section, {
         title: "Integrantes que cobraban el programa Volver al Trabajo",
         hint: "Agosto 2026 (ex Salario Social Complementario)",
         icon: HandCoins
@@ -3006,8 +3024,10 @@
         { label: "Sin margen (paga saliendo de la comida)", value: sinMargen, color: "#7A2A1C" },
         { label: "M\xE1s de 3 a\xF1os", value: mesesMargen.filter(m => m > 36).length, color: T.clay },
         { label: "2 a 3 a\xF1os", value: mesesMargen.filter(m => m > 24 && m <= 36).length, color: "#C25B3A" },
-        { label: "1 a 2 a\xF1os", value: mesesMargen.filter(m => m > 12 && m <= 24).length, color: T.amber },
-        { label: "Hasta 1 a\xF1o", value: mesesMargen.filter(m => m <= 12).length, color: T.olive }
+        { label: "1 a 2 a\xF1os", value: mesesMargen.filter(m => m > 12 && m <= 24).length, color: "#D98A3D" },
+        { label: "6 meses a 1 a\xF1o", value: mesesMargen.filter(m => m > 6 && m <= 12).length, color: T.amber },
+        { label: "3 a 6 meses", value: mesesMargen.filter(m => m > 3 && m <= 6).length, color: "#8FA83E" },
+        { label: "Hasta 3 meses", value: mesesMargen.filter(m => m <= 3).length, color: T.olive }
       ].filter(x => x.value > 0);
       const margenSectionEl = h(Section, {
         title: "Margen para pagar despu\xE9s de comer",
