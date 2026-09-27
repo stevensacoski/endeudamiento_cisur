@@ -2564,6 +2564,21 @@
         c: T.amber
       }].filter(x => x.v > 0);
       const fintech = data.filter(r => r.creditors.fintech).length;
+      // Composición excluyente formal/informal sobre endeudados (un hogar en una sola categoría)
+      const hasFormal = r => Object.keys(credGroup).some(k => credGroup[k] === "formal" && r.creditors[k]);
+      const hasInformal = r => Object.keys(credGroup).some(k => credGroup[k] === "informal" && r.creditors[k]);
+      const formalInformalDist = [
+        { label: "Solo cr\xE9dito formal", value: conDeuda.filter(r => hasFormal(r) && !hasInformal(r)).length, color: T.indigo },
+        { label: "Solo cr\xE9dito informal", value: conDeuda.filter(r => hasInformal(r) && !hasFormal(r)).length, color: T.clay },
+        { label: "Formal e informal a la vez", value: conDeuda.filter(r => hasFormal(r) && hasInformal(r)).length, color: "#6B5B95" }
+      ].filter(x => x.value > 0);
+      const formalInformalSectionEl = /*#__PURE__*/React.createElement(Section, {
+        title: "Combinaci\xF3n de cr\xE9dito formal e informal",
+        hint: "% de hogares endeudados \xB7 categor\xEDas excluyentes (el resto solo tiene deudas de vivienda u otras fuentes)",
+        icon: Layers
+      }, formalInformalDist.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: formalInformalDist, showPct: true, denom: nD
+      }) : /*#__PURE__*/React.createElement(Empty, null));
       const gota = data.filter(r => r.creditors.prestamista).length;
       const apuestas = data.filter(r => r.atribucion.has("apuestas") || r.debts.some(d => norm(d.motivo).includes("apuesta"))).length;
       const bicicleta = data.filter(r => r.refinancio || r.atribucion.has("pago_deuda") || r.debts.some(d => norm(d.motivo).includes("otra deuda"))).length;
@@ -2800,7 +2815,9 @@
         items: cred,
         showPct: true,
         denom: nD
-      })), acreedDistSectionEl, /*#__PURE__*/React.createElement(Section, {
+      })), /*#__PURE__*/React.createElement("div", {
+        className: "grid md:grid-cols-2 gap-4"
+      }, acreedDistSectionEl, formalInformalSectionEl), /*#__PURE__*/React.createElement(Section, {
         title: "Se\xF1ales de alerta",
         hint: "Motores emergentes de endeudamiento",
         icon: AlertTriangle
