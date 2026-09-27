@@ -345,6 +345,17 @@
       maximumFractionDigits: 0
     }).format(Math.round(n)) : "—";
     const pct = (part, total) => total > 0 ? Math.round(part / total * 100) : 0;
+    // Reparte enteros con método del resto mayor: la suma da exactamente 100 (para particiones).
+    const pct100 = values => {
+      const total = values.reduce((a, b) => a + (b > 0 ? b : 0), 0);
+      if (total <= 0) return values.map(() => 0);
+      const raw = values.map(v => (v > 0 ? v : 0) / total * 100);
+      const out = raw.map(Math.floor);
+      let rem = 100 - out.reduce((a, b) => a + b, 0);
+      const order = raw.map((v, i) => [v - Math.floor(v), i]).sort((a, b) => b[0] - a[0]);
+      for (let j = 0; rem > 0 && j < order.length; j++, rem--) out[order[j][1]] += 1;
+      return out;
+    };
     const mean = arr => {
       const a = arr.filter(x => isFinite(x));
       return a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN;
@@ -1101,7 +1112,7 @@
           fontVariantNumeric: "tabular-nums"
         },
         className: "text-xs font-medium whitespace-nowrap"
-      }, fmt(it.value), showPct && denom ? ` · ${pct(it.value, denom)}%` : "")), /*#__PURE__*/React.createElement("div", {
+      }, fmt(it.value), showPct && denom ? ` · ${it.pct != null ? it.pct : pct(it.value, denom)}%` : "")), /*#__PURE__*/React.createElement("div", {
         style: {
           background: T.paper
         },
@@ -2664,17 +2675,21 @@
         if (nl.includes("apuest")) return "#7A2818";
         return T.faint;
       };
-      const motivosPrimera = countBy(
+      const motivosPrimeraRaw = countBy(
         conDeuda.map(r => r.debts[0]).filter(d => d && d.motivo && String(d.motivo).trim()),
         d => String(d.motivo).trim()
-      ).map(x => ({ label: x.key, value: x.n, color: motivoColor(x.key) }));
+      );
+      const motivosPrimeraPct = pct100(motivosPrimeraRaw.map(x => x.n));
+      const motivosPrimera = motivosPrimeraRaw.map((x, i) => ({ label: x.key, value: x.n, color: motivoColor(x.key), pct: motivosPrimeraPct[i] }));
       const nPrimera = motivosPrimera.reduce((s, x) => s + x.value, 0);
       const todosMotivosFlat = [];
       conDeuda.forEach(r => r.debts.forEach(d => {
         if (d && d.motivo && String(d.motivo).trim()) todosMotivosFlat.push(String(d.motivo).trim());
       }));
-      const motivosTodos = countBy(todosMotivosFlat, x => x).map(x => ({
-        label: x.key, value: x.n, color: motivoColor(x.key)
+      const motivosTodosRaw = countBy(todosMotivosFlat, x => x);
+      const motivosTodosPct = pct100(motivosTodosRaw.map(x => x.n));
+      const motivosTodos = motivosTodosRaw.map((x, i) => ({
+        label: x.key, value: x.n, color: motivoColor(x.key), pct: motivosTodosPct[i]
       }));
       // ── Situación por DEUDA (no por hogar), agrupada en 3 sectores ──
       // A nivel deuda: cada deuda cuenta con su propia situación BCRA.
