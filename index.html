@@ -2613,11 +2613,15 @@
         value: data.filter(r => r.atribucion.has(k)).length,
         color: k === "apuestas" ? T.clay : T.petrol
       })).filter(x => x.value).sort((a, b) => b.value - a.value);
-      const antigOrder = ["Hace menos de 6 meses", "Entre 6 meses y 1 año", "Entre 1 y 2 años", "Entre 2 y 4 años", "Hace más de 4 años", "No sabe / no recuerda"];
-      const antig = ordered(countBy(conDeuda, r => r.antiguedad), antigOrder).map(d => ({
+      const antigGroup = v => v === "Hace menos de 6 meses" || v === "Entre 6 meses y 1 año" ? "Menos de un año" : v;
+      const antigOrder = ["Menos de un año", "Entre 1 y 2 años", "Entre 2 y 4 años", "Hace más de 4 años", "No sabe / no recuerda"];
+      const antigRaw = ordered(countBy(conDeuda, r => antigGroup(r.antiguedad)), antigOrder);
+      const antigPct = pct100(antigRaw.map(x => x.n));
+      const antig = antigRaw.map((d, i) => ({
         label: d.key,
         value: d.n,
-        color: T.olive
+        color: T.olive,
+        pct: antigPct[i]
       }));
       const bcraOrder = ["Está al día / no tiene atraso", "Hasta 31 días de atraso", "Más de 31 y hasta 90 días", "Más de 90 y hasta 180 días", "Más de 180 días y hasta 1 año", "Más de 1 año y hasta 2 años", "Más de 2 años y hasta 3 años", "Más de 3 años y hasta 4 años", "Más de 4 años", "No sabe / no recuerda"];
       const bcraCount = {};
