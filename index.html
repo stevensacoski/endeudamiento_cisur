@@ -674,7 +674,8 @@
         const oiA = ["entre 25% y 50%", "mas del 50%"].includes(norm(propIngreso)); // destina una parte alta del ingreso a pagar deudas
         const oiB = isSi(g(r, C.disminuyoComida)); // redujo comidas en el último año
         const oiC = redujo.has("alimentacion"); // marcó alimentación entre los recortes para poder pagar
-        const overIndebted = tieneDeuda && (oiA || oiB || oiC);
+        const oiCount = (oiA ? 1 : 0) + (oiB ? 1 : 0) + (oiC ? 1 : 0);
+        const overIndebted = tieneDeuda && oiCount >= 1;
         return {
           idx: ri,
           provincia: (g(r, C.provincia) || "").toString().trim() || "Sin dato",
@@ -728,6 +729,7 @@
           oiA,
           oiB,
           oiC,
+          oiCount,
           submittedAt: parseGvizDate(g(r, C.submitted)),
           surveyor: (g(r, C.surveyor) || "").toString().trim() || "Sin dato",
           uuid: (g(r, C.uuid) || "").toString().trim(),
@@ -989,6 +991,7 @@
           oiA: ["entre 25% y 50%", "mas del 50%"].includes(norm(propV)),
           oiB: dismComida,
           oiC: redujo.has("alimentacion"),
+          oiCount: (["entre 25% y 50%", "mas del 50%"].includes(norm(propV)) ? 1 : 0) + (dismComida ? 1 : 0) + (redujo.has("alimentacion") ? 1 : 0),
           submittedAt: new Date(2026, 8, 1 + Math.floor(i / 7)),
           surveyor: pick(["encuestador1", "encuestador2", "encuestador3", "encuestador4"]),
           uuid: "demo-" + i,
@@ -1153,6 +1156,7 @@
       });
       const [status, setStatus] = useState("idle"); // idle | loading | error | ok
       const [tab, setTab] = useState("avance");
+      const [oiMin, setOiMin] = useState(1); // criterio de sobreendeudamiento: 1 de 3 (default) o 2 de 3
       const [flt, setFlt] = useState({
         prov: "",
         depto: "",
@@ -1231,8 +1235,12 @@
       }, [records, flt.prov, flt.depto]);
       const data = useMemo(() => {
         if (!records) return [];
-        return records.filter(r => (!flt.prov || r.provincia === flt.prov) && (!flt.depto || r.departamento === flt.depto) && (!flt.barrio || r.barrio === flt.barrio) && (!flt.genero || r.genero === flt.genero));
-      }, [records, flt]);
+        return records.filter(r => (!flt.prov || r.provincia === flt.prov) && (!flt.depto || r.departamento === flt.depto) && (!flt.barrio || r.barrio === flt.barrio) && (!flt.genero || r.genero === flt.genero))
+          // Sobreendeudamiento recalculado según el criterio elegido (1 de 3 o 2 de 3).
+          // Se recomputa acá, en el único punto por el que pasan todas las pestañas,
+          // así el KPI, el mapa y la comparación Volver al Trabajo quedan siempre consistentes.
+          .map(r => ({ ...r, overIndebted: r.tieneDeuda && (r.oiCount || 0) >= oiMin }));
+      }, [records, flt, oiMin]);
       if (!records && status !== "ok") return /*#__PURE__*/React.createElement(Landing, {
         status: status,
         onRetry: loadLive,
@@ -1273,7 +1281,9 @@
       }) : tab === "trabajo" ? /*#__PURE__*/React.createElement(Trabajo, {
         data: data
       }) : tab === "deuda" ? /*#__PURE__*/React.createElement(Deuda, {
-        data: data
+        data: data,
+        oiMin: oiMin,
+        setOiMin: setOiMin
       }) : tab === "mapa" ? /*#__PURE__*/React.createElement(MapaTab, {
         data: data
       }) : /*#__PURE__*/React.createElement(Vulnerabilidad, {
@@ -1988,6 +1998,7 @@
       data
     }) {
       const ingMed = median(data.map(r => r.ingTotal).filter(x => x > 0));
+      const ingProm = mean(data.map(r => r.ingTotal).filter(x => x > 0));
       const perCap = median(data.map(r => r.personasHogar > 0 ? r.ingTotal / r.personasHogar : NaN));
       const hogarMed = median(data.map(r => r.personasHogar));
       const hogarProm = mean(data.map(r => r.personasHogar));
@@ -2037,6 +2048,12 @@
         label: "Ingreso del hogar (mediana)",
         value: fmtARS(ingMed),
         sub: "mensual",
+        icon: Wallet
+      }), /*#__PURE__*/React.createElement(KPI, {
+        label: "Ingreso del hogar (promedio)",
+        value: fmtARS(ingProm),
+        sub: "mensual",
+        color: T.petrol,
         icon: Wallet
       }), /*#__PURE__*/React.createElement(KPI, {
         label: "Ingreso por persona (mediana)",
@@ -2470,7 +2487,9 @@
 
     /* ─────────────────  TAB: ENDEUDAMIENTO  ───────────────── */
     function Deuda({
-      data
+      data,
+      oiMin = 1,
+      setOiMin
     }) {
       const n = data.length;
       const conDeuda = data.filter(r => r.tieneDeuda);
@@ -2768,15 +2787,41 @@
         icon: AlertTriangle,
         def: "Hogares endeudados con al menos una deuda con atraso de 90 d\xEDas o m\xE1s (situaci\xF3n BCRA). Sobre el total de hogares endeudados; excluyente con atraso."
       }), /*#__PURE__*/React.createElement(Indicator, {
-        title: "Sobreendeudamiento",
+        title: oiMin >= 2 ? "Sobreendeudamiento (2 de 3)" : "Sobreendeudamiento (1 de 3)",
         value: pct(sobre, nD),
         count: sobre,
         total: nD,
         color: "#6B5B95",
         bg: "#ECE7F1",
         icon: AlertTriangle,
-        def: "Sobre hogares endeudados: los que cumplen \u22651 de \u2014 destinan 25% o m\xE1s del ingreso a pagar deudas \xB7 redujeron comidas en el \xFAltimo a\xF1o \xB7 marcaron alimentaci\xF3n entre los recortes para poder pagar."
-      })), /*#__PURE__*/React.createElement("div", {
+        def: `Sobre hogares endeudados: los que cumplen \u2265${oiMin} de \u2014 destinan 25% o m\xE1s del ingreso a pagar deudas \xB7 redujeron comidas en el \xFAltimo a\xF1o \xB7 marcaron alimentaci\xF3n entre los recortes para poder pagar.`
+      })), setOiMin && /*#__PURE__*/React.createElement("div", {
+        style: {
+          border: `1px solid ${T.line}`,
+          background: T.surface
+        },
+        className: "rounded-xl p-3 flex flex-wrap items-center gap-x-3 gap-y-2 justify-between"
+      }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+        style: { color: T.ink },
+        className: "text-xs font-semibold"
+      }, "Criterio de sobreendeudamiento"), /*#__PURE__*/React.createElement("div", {
+        style: { color: T.faint },
+        className: "text-xs mt-0.5"
+      }, "Cu\xE1ntos de los 3 criterios debe cumplir el hogar \xB7 tambi\xE9n afecta el Mapa y la comparaci\xF3n Volver al Trabajo")), /*#__PURE__*/React.createElement("div", {
+        style: {
+          border: `1px solid ${T.line}`,
+          background: T.paper
+        },
+        className: "inline-flex rounded-lg p-0.5 shrink-0"
+      }, [[1, "1 de 3"], [2, "2 de 3"]].map(([v, lbl]) => /*#__PURE__*/React.createElement("button", {
+        key: v,
+        onClick: () => setOiMin(v),
+        style: {
+          background: oiMin === v ? "#6B5B95" : "transparent",
+          color: oiMin === v ? "#fff" : T.muted
+        },
+        className: "text-xs font-medium px-3 py-1.5 rounded-md whitespace-nowrap"
+      }, lbl)))), /*#__PURE__*/React.createElement("div", {
         className: "grid grid-cols-2 md:grid-cols-3 gap-3"
       }, /*#__PURE__*/React.createElement(KPI, {
         label: "Acreedores por hogar (promedio)",
@@ -2988,13 +3033,25 @@
         retencion_bienes: "Retención de documentos o bienes"
       };
       const grave = ["amenazas_fisicas", "retencion_bienes", "amenazas_verbales"];
-      const co = Object.keys(coLbl).map(k => ({
-        label: coLbl[k],
-        value: data.filter(r => r.coercion.has(k)).length,
-        color: grave.includes(k) ? T.clay : k === "amenazas_verbales" ? "#C25B3A" : T.amber
-      })).filter(x => x.value).sort((a, b) => b.value - a.value);
       const conCoercion = data.filter(r => [...r.coercion].some(k => k !== "sin_presion" && k !== "prefiere_no")).length;
       const conGrave = data.filter(r => grave.some(k => r.coercion.has(k))).length;
+      // Filtro de prácticas de cobranza por tipo de deuda del hogar.
+      // OJO metodológico: la encuesta registra las prácticas a nivel HOGAR, en una sola
+      // pregunta, sin vincularlas a un acreedor puntual. Esto muestra la prevalencia ENTRE
+      // los hogares que TIENEN ese tipo de deuda (con solapamiento: un hogar puede tener
+      // varios tipos a la vez), NO que la práctica provenga de ese acreedor.
+      const credGroupV = { banco: "formal", financiera: "formal", fintech: "formal", tarjeta_banco: "formal", tarjeta_comercio: "formal", cuotas_comercio: "formal", cooperativa: "formal", fiado: "informal", prestamista: "informal", familiar: "informal", servicios: "vivienda", alquiler: "vivienda", otro: "otro" };
+      const [coTipo, setCoTipo] = useState("todos");
+      const tieneGrupo = (r, grupo) => Object.keys(r.creditors || {}).some(k => r.creditors[k] && credGroupV[k] === grupo);
+      const coBase = coTipo === "todos" ? conDeuda : conDeuda.filter(r => tieneGrupo(r, coTipo));
+      const nCo = coBase.length;
+      const coFilt = Object.keys(coLbl).map(k => ({
+        label: coLbl[k],
+        value: coBase.filter(r => r.coercion.has(k)).length,
+        color: grave.includes(k) ? T.clay : T.amber
+      })).filter(x => x.value).sort((a, b) => b.value - a.value);
+      const graveCo = coBase.filter(r => grave.some(k => r.coercion.has(k))).length;
+      const coTipoLbl = { todos: "todos los hogares endeudados", formal: "hogares con deuda formal", informal: "hogares con deuda informal", vivienda: "hogares con deuda de servicios/vivienda" };
       const nivelOrder = ["Nada", "Un poco", "Bastante", "Mucho", "Muchísimo"];
       const nivel = ordered(countBy(conDeuda, r => r.afectacionNivel), nivelOrder).filter(d => d.key && d.key !== "Sin dato").map((d, i) => ({
         label: d.key,
@@ -3129,12 +3186,21 @@
         def: "Hogares que tuvieron que disminuir alguna comida diaria o que asisten a un comedor / reciben viandas \u2014 uni\xF3n de ambos, sin doble conteo."
       }), margenSectionEl), /*#__PURE__*/React.createElement(Section, {
         title: "Pr\xE1cticas de cobranza coercitiva",
-        hint: "Desagregadas por tipo \xB7 rojo = pr\xE1cticas graves",
-        icon: ShieldAlert
-      }, co.length ? /*#__PURE__*/React.createElement(RankBars, {
-        items: co,
+        hint: `${nCo} ${coTipoLbl[coTipo]} \xB7 ${pct(graveCo, nCo)}% con pr\xE1cticas graves \xB7 rojo = graves`,
+        icon: ShieldAlert,
+        right: h("div", { className: "flex flex-wrap gap-1" }, [["todos", "Todos"], ["formal", "Formal"], ["informal", "Informal"], ["vivienda", "Servicios y vivienda"]].map(([k, lbl]) => h("button", {
+          key: k, onClick: () => setCoTipo(k),
+          style: {
+            background: coTipo === k ? T.ink : "transparent",
+            color: coTipo === k ? "#fff" : T.muted,
+            border: "1px solid " + (coTipo === k ? T.ink : T.line)
+          },
+          className: "text-xs font-medium px-2.5 py-1 rounded-lg"
+        }, lbl)))
+      }, coFilt.length ? /*#__PURE__*/React.createElement(RankBars, {
+        items: coFilt,
         showPct: true,
-        denom: nD
+        denom: nCo
       }) : /*#__PURE__*/React.createElement(Empty, null)), /*#__PURE__*/React.createElement("div", {
         className: "grid md:grid-cols-2 gap-4"
       }, /*#__PURE__*/React.createElement(Section, {
